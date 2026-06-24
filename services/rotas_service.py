@@ -1,11 +1,11 @@
 from __future__ import annotations
 
-import os
 from datetime import date, datetime
 from typing import Any
 
 import pandas as pd
 
+from services.config import get_config
 from services.db import get_connection
 
 
@@ -16,9 +16,9 @@ STATUS_FALHA = "FALHA"
 
 
 def autenticar_admin(usuario: str, senha: str) -> bool:
-    admin_user = os.getenv("ADMIN_USER", "admin")
-    admin_password = os.getenv("ADMIN_PASSWORD", "")
-    return usuario.strip() == admin_user and bool(senha) and senha == admin_password
+    admin_user = get_config("ADMIN_USER", "admin")
+    admin_password = get_config("ADMIN_PASSWORD", "123456")
+    return usuario.strip().lower() == admin_user.strip().lower() and bool(senha) and senha == admin_password
 
 
 def autenticar_entregador(nome: str, codigo: str) -> dict[str, Any] | None:
