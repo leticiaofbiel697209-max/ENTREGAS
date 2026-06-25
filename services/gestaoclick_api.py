@@ -298,6 +298,37 @@ def _format_address(address: dict[str, Any]) -> str:
     return line
 
 
+def _address_payload(address: dict[str, Any], label: str = "") -> dict[str, str]:
+    return {
+        "label": label or _address_kind(address).title() or "Endereco",
+        "endereco": _format_address(address),
+        "cidade": str(_first_value(address, ("cidade", "municipio", "nome_cidade"))),
+        "estado": str(_first_value(address, ("estado", "uf"))),
+        "cep": str(_first_value(address, ("cep", "codigo_postal"))),
+    }
+
+
+def _list_addresses(container: dict[str, Any]) -> list[dict[str, str]]:
+    """Lista enderecos disponiveis, priorizando o mesmo formato usado pelo GestaoClick."""
+    enderecos: list[dict[str, str]] = []
+    direct = _pick_address(container)
+    if direct:
+        enderecos.append(_address_payload(direct, _address_kind(direct).title()))
+
+    for key in ("enderecos_entrega", "enderecos", "enderecos_cliente", "enderecos_cadastro"):
+        value = container.get(key)
+        if not isinstance(value, list):
+            continue
+        for item in value:
+            address = _unwrap_address_item(item)
+            if not address:
+                continue
+            payload = _address_payload(address, _address_kind(address).title())
+            if payload["endereco"] and payload not in enderecos:
+                enderecos.append(payload)
+    return enderecos
+
+
 def _sale_address_source(venda: dict[str, Any]) -> dict[str, Any]:
     address = _pick_address(venda)
     if address:
@@ -575,6 +606,25 @@ def buscar_pedido_detalhado(origem: str, pedido_id: str) -> dict[str, str]:
     return _completar_com_cliente(dados, dados.get("cliente_id", ""))
 
 
+def buscar_venda_por_numero(numero_venda: str) -> dict[str, Any]:
+    loja = obter_loja_alvo()
+    candidatos = _listar_registros(
+        "vendas",
+        params={
+            "codigo": numero_venda,
+            "tipo": "produto",
+            "loja_id": loja["id"],
+        },
+        max_paginas=3,
+    )
+    for venda in candidatos:
+        if str(_first_value(venda, ("codigo", "numero", "numero_venda", "id"))) == str(numero_venda):
+            return _unwrap(venda)
+    if candidatos:
+        return _unwrap(candidatos[0])
+    raise GestaoClickAPIError(f"Venda numero {numero_venda} nao encontrada na loja NOVAPRINT.")
+
+
 def _buscar_situacao_id_venda(nome: str) -> str:
     alvo = _normalize_text(nome)
     for situacao in listar_situacoes_vendas():
@@ -626,12 +676,24 @@ def _normalizar_pagamentos_para_put(venda: dict[str, Any]) -> list[dict[str, Any
     return pagamentos
 
 
-def _montar_payload_venda(venda: dict[str, Any], situacao_id: str, recebido_por: str) -> dict[str, Any]:
-    atributo_recebedor_id = _buscar_atributo_venda_id("RECEBEDOR")
+def _montar_payload_venda(
+    venda: dict[str, Any],
+    situacao_id: str,
+    recebido_por: str,
+    incluir_recebedor: bool = True,
+) -> dict[str, Any]:
+    atributo_recebedor_id = _buscar_atributo_venda_id("RECEBEDOR") if incluir_recebedor else ""
     atributos = venda.get("atributos") or venda.get("valores_atributos") or []
-    if atributo_recebedor_id:
+    if incluir_recebedor and atributo_recebedor_id and recebido_por:
         atributos = [item for item in atributos if str(item.get("atributo_id") or item.get("id")) != atributo_recebedor_id]
-        atributos.append({"atributo_id": atributo_recebedor_id, "valor": recebido_por})
+        atributos.append(
+            {
+                "id": atributo_recebedor_id,
+                "atributo_id": atributo_recebedor_id,
+                "nome": "RECEBEDOR",
+                "valor": recebido_por,
+            }
+        )
 
     payload = {
         "tipo": _clean_value(venda.get("tipo"), "produto"),
@@ -650,7 +712,7 @@ def _montar_payload_venda(venda: dict[str, Any], situacao_id: str, recebido_por:
         "pagamentos": _normalizar_pagamentos_para_put(venda),
     }
 
-    if atributos:
+    if incluir_recebedor and atributos:
         payload["atributos"] = atributos
         payload["valores_atributos"] = atributos
 
@@ -671,18 +733,54 @@ def buscar_cliente(cliente_id: str) -> dict[str, Any]:
     return _unwrap(_get_first_success(f"clientes/{cliente_id}"))
 
 
+def buscar_cliente_por_termo(termo: str) -> dict[str, Any]:
+    filtros = []
+    termo_limpo = termo.strip()
+    somente_numeros = "".join(char for char in termo_limpo if char.isdigit())
+    if termo_limpo:
+        filtros.extend(
+            [
+                {"nome": termo_limpo},
+                {"cpf_cnpj": termo_limpo},
+                {"telefone": termo_limpo},
+                {"email": termo_limpo},
+            ]
+        )
+    if somente_numeros and somente_numeros != termo_limpo:
+        filtros.extend(
+            [
+                {"cpf_cnpj": somente_numeros},
+                {"telefone": somente_numeros},
+            ]
+        )
+
+    for params in filtros:
+        clientes = _listar_registros("clientes", params=params, max_paginas=2)
+        if clientes:
+            return _unwrap(clientes[0])
+    raise GestaoClickAPIError(f"Cliente {termo} nao encontrado.")
+
+
 def buscar_endereco_venda(venda_id: str) -> dict[str, Any]:
-    venda = buscar_venda(venda_id)
+    try:
+        venda = buscar_venda_por_numero(venda_id)
+    except Exception:
+        venda = buscar_venda(venda_id)
     dados = normalizar_venda_para_entrega(venda)
     dados["venda_id"] = dados.get("venda_id") or venda_id
-    return _completar_com_cliente(dados, dados.get("cliente_id", ""))
+    dados = _completar_com_cliente(dados, dados.get("cliente_id", ""))
+    dados["opcoes_endereco"] = listar_enderecos_venda(str(dados.get("venda_id") or venda_id))
+    return dados
 
 
 def buscar_endereco_cliente(cliente_id: str) -> dict[str, Any]:
-    cliente = buscar_cliente(cliente_id)
+    try:
+        cliente = buscar_cliente(cliente_id)
+    except Exception:
+        cliente = buscar_cliente_por_termo(cliente_id)
     fonte = _pick_address(cliente) or cliente
 
-    return {
+    dados = {
         "cliente": str(_first_value(cliente, ("nome", "razao_social", "cliente"))),
         "telefone": str(_first_value(cliente, ("telefone", "celular", "fone"))),
         "endereco": _format_address(fonte),
@@ -690,21 +788,64 @@ def buscar_endereco_cliente(cliente_id: str) -> dict[str, Any]:
         "estado": str(_first_value(fonte, ("estado", "uf"))),
         "cep": str(_first_value(fonte, ("cep", "codigo_postal"))),
     }
+    dados["opcoes_endereco"] = _list_addresses(cliente)
+    return dados
+
+
+def listar_enderecos_venda(venda_id: str) -> list[dict[str, str]]:
+    venda = buscar_venda(venda_id)
+    enderecos = _list_addresses(venda)
+    cliente_id = _field_id(venda, ("cliente_id", "id_cliente", "cliente"))
+    if cliente_id:
+        try:
+            cliente = buscar_cliente(cliente_id)
+            for endereco in _list_addresses(cliente):
+                if endereco["endereco"] and endereco not in enderecos:
+                    enderecos.append(endereco)
+        except Exception:
+            pass
+    return enderecos
 
 
 def atualizar_status_venda(venda_id: str, status: str, recebido_por: str = "") -> dict[str, Any]:
     venda = buscar_venda(venda_id)
     situacao_id = _buscar_situacao_id_venda(status)
-    payload = _montar_payload_venda(venda, situacao_id, recebido_por)
+    if not situacao_id:
+        raise GestaoClickAPIError(f"Situacao {status} nao encontrada nas situacoes de vendas.")
 
     resposta = None
     last_error: Exception | None = None
-    for candidate in _endpoint_candidates(f"vendas/{venda_id}"):
-        try:
-            resposta = _request("PUT", candidate, json=payload)
+    recebedor_enviado = bool(recebido_por)
+    erro_recebedor = ""
+
+    # Tenta primeiro atualizar status e RECEBEDOR juntos. Se a API rejeitar
+    # o formato do campo extra, tenta novamente somente com a situacao.
+    tentativas: list[tuple[dict[str, Any], bool]] = []
+    try:
+        tentativas.append(
+            (_montar_payload_venda(venda, situacao_id, recebido_por, incluir_recebedor=True), True)
+        )
+    except Exception as exc:
+        last_error = exc
+        recebedor_enviado = False
+        erro_recebedor = str(exc)
+    tentativas.append(
+        (_montar_payload_venda(venda, situacao_id, recebido_por, incluir_recebedor=False), False)
+    )
+
+    for payload, tentou_recebedor in tentativas:
+        for candidate in _endpoint_candidates(f"vendas/{venda_id}"):
+            try:
+                resposta = _request("PUT", candidate, json=payload)
+                if not tentou_recebedor and recebido_por:
+                    recebedor_enviado = False
+                    if not erro_recebedor:
+                        erro_recebedor = str(last_error or "Campo RECEBEDOR nao aceito pela API neste formato.")
+                break
+            except Exception as exc:
+                last_error = exc
+        if resposta is not None:
             break
-        except Exception as exc:
-            last_error = exc
 
     if resposta is None:
         if last_error:
@@ -713,7 +854,8 @@ def atualizar_status_venda(venda_id: str, status: str, recebido_por: str = "") -
 
     return {
         "status_atualizado": True,
-        "situacao_id_enviada": payload.get("situacao_id"),
-        "recebedor_enviado": bool(recebido_por),
+        "situacao_id_enviada": situacao_id,
+        "recebedor_enviado": recebedor_enviado,
+        "erro_recebedor": erro_recebedor,
         "retorno": resposta,
     }
