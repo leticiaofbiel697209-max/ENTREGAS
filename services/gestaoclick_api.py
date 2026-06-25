@@ -53,19 +53,24 @@ def _base_url() -> str:
 
 def status_configuracao() -> dict[str, str | bool]:
     token = get_config("GESTAOCLICK_TOKEN", "").strip()
+    secret_token = get_config("GESTAOCLICK_SECRET_TOKEN", "").strip()
     return {
         "url": _base_url(),
         "token_configurado": bool(token),
+        "secret_token_configurado": bool(secret_token),
     }
 
 
 def _headers() -> dict[str, str]:
     token = get_config("GESTAOCLICK_TOKEN", "").strip()
+    secret_token = get_config("GESTAOCLICK_SECRET_TOKEN", "").strip()
     if not token:
         raise GestaoClickAPIError("GESTAOCLICK_TOKEN nao configurado.")
+    if not secret_token:
+        raise GestaoClickAPIError("GESTAOCLICK_SECRET_TOKEN nao configurado.")
     return {
-        "Authorization": f"Bearer {token}",
         "access-token": token,
+        "secret-access-token": secret_token,
         "Content-Type": "application/json",
         "Accept": "application/json",
     }
