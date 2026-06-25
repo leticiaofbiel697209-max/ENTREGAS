@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import unicodedata
+from datetime import date, timedelta
 from typing import Any
 
 import requests
@@ -197,7 +198,11 @@ def _sale_address_source(venda: dict[str, Any]) -> dict[str, Any]:
     return venda
 
 
-def normalizar_venda_para_entrega(venda: dict[str, Any], situacoes_por_id: dict[str, str] | None = None) -> dict[str, str]:
+def normalizar_venda_para_entrega(
+    venda: dict[str, Any],
+    situacoes_por_id: dict[str, str] | None = None,
+    origem: str = "vendas",
+) -> dict[str, str]:
     cliente = _sale_cliente(venda)
     endereco = _sale_address_source(venda)
     situacao_id = _sale_status_id(venda)
@@ -223,11 +228,14 @@ def normalizar_venda_para_entrega(venda: dict[str, Any], situacoes_por_id: dict[
         "observacao": str(_first_value(venda, ("observacoes", "observacao", "obs"))),
         "situacao": status,
         "situacao_id": situacao_id,
+        "data": str(_first_value(venda, ("data", "data_venda", "data_cadastro"))),
+        "valor_total": str(_first_value(venda, ("valor_total", "valor", "total"))),
+        "origem": origem,
     }
 
 
-def listar_situacoes_vendas() -> list[dict[str, str]]:
-    payload = _request("GET", "situacoes_vendas")
+def _listar_situacoes(endpoint: str) -> list[dict[str, str]]:
+    payload = _request("GET", endpoint)
     situacoes = []
     for item in _extract_items(payload):
         situacoes.append(
@@ -239,8 +247,16 @@ def listar_situacoes_vendas() -> list[dict[str, str]]:
     return situacoes
 
 
-def _listar_vendas(params: dict[str, Any] | None = None, max_paginas: int = 5) -> list[dict[str, Any]]:
-    vendas: list[dict[str, Any]] = []
+def listar_situacoes_vendas() -> list[dict[str, str]]:
+    return _listar_situacoes("situacoes_vendas")
+
+
+def listar_situacoes_orcamentos() -> list[dict[str, str]]:
+    return _listar_situacoes("situacoes_orcamentos")
+
+
+def _listar_registros(endpoint: str, params: dict[str, Any] | None = None, max_paginas: int = 10) -> list[dict[str, Any]]:
+    registros: list[dict[str, Any]] = []
     params_base = dict(params or {})
 
     for pagina in range(1, max_paginas + 1):
@@ -249,52 +265,84 @@ def _listar_vendas(params: dict[str, Any] | None = None, max_paginas: int = 5) -
             "pagina": pagina,
             "limite": 100,
         }
-        payload = _request("GET", "vendas", params=params_pagina)
+        payload = _request("GET", endpoint, params=params_pagina)
         itens = _extract_items(payload)
         if not itens:
             break
 
-        vendas.extend(itens)
+        registros.extend(itens)
         meta = payload.get("meta") if isinstance(payload.get("meta"), dict) else {}
-        if not meta.get("proxima_pagina") and len(itens) < 100:
+        if not meta.get("proxima_pagina"):
             break
 
-    return vendas
+    return registros
+
+
+def _buscar_pedidos_endpoint(
+    endpoint: str,
+    endpoint_situacoes: str,
+    origem: str,
+    data_inicio: date | None,
+    max_paginas: int,
+) -> list[dict[str, str]]:
+    situacoes = _listar_situacoes(endpoint_situacoes)
+    situacoes_por_id = {item["id"]: item["nome"] for item in situacoes if item.get("id")}
+    params: dict[str, Any] = {
+        "ordenacao": "data",
+        "direcao": "desc",
+    }
+    if data_inicio:
+        params["data_inicio"] = data_inicio.isoformat()
+
+    registros = _listar_registros(endpoint, params=params, max_paginas=max_paginas)
+    return [
+        normalizar_venda_para_entrega(registro, situacoes_por_id, origem=origem)
+        for registro in registros
+    ]
+
+
+def listar_pedidos_gestaoclick(
+    data_inicio: date | None = None,
+    incluir_orcamentos: bool = True,
+    max_paginas: int = 10,
+) -> list[dict[str, str]]:
+    if data_inicio is None:
+        data_inicio = date.today() - timedelta(days=180)
+
+    pedidos = _buscar_pedidos_endpoint(
+        endpoint="vendas",
+        endpoint_situacoes="situacoes_vendas",
+        origem="venda",
+        data_inicio=data_inicio,
+        max_paginas=max_paginas,
+    )
+
+    if incluir_orcamentos:
+        pedidos.extend(
+            _buscar_pedidos_endpoint(
+                endpoint="orcamentos",
+                endpoint_situacoes="situacoes_orcamentos",
+                origem="orcamento",
+                data_inicio=data_inicio,
+                max_paginas=max_paginas,
+            )
+        )
+
+    pedidos_unicos: list[dict[str, str]] = []
+    vistos: set[tuple[str, str]] = set()
+    for pedido in pedidos:
+        chave = (pedido.get("origem", ""), pedido.get("venda_id", "") or pedido.get("numero_venda", ""))
+        if chave not in vistos:
+            pedidos_unicos.append(pedido)
+            vistos.add(chave)
+
+    return pedidos_unicos
 
 
 def listar_vendas_por_situacoes(situacoes: tuple[str, ...] = ("em andamento", "pronta entrega")) -> list[dict[str, str]]:
     desejadas = {_normalize_text(situacao) for situacao in situacoes}
-    situacoes_api = listar_situacoes_vendas()
-    situacoes_por_id = {item["id"]: item["nome"] for item in situacoes_api if item.get("id")}
-    situacoes_ids = [
-        item["id"]
-        for item in situacoes_api
-        if item.get("id") and _normalize_text(item.get("nome")) in desejadas
-    ]
-
-    vendas: list[dict[str, Any]] = []
-    vistos: set[str] = set()
-
-    # Quando sabemos o ID da situacao, pedimos direto para a API.
-    for situacao_id in situacoes_ids:
-        for venda in _listar_vendas({"situacao_id": situacao_id}):
-            venda_id = str(_first_value(venda, ("id", "codigo", "venda_id", "id_venda")))
-            if venda_id not in vistos:
-                vendas.append(venda)
-                vistos.add(venda_id)
-
-    # Fallback: busca geral e filtra localmente.
-    if not vendas:
-        vendas = _listar_vendas()
-
-    normalizadas = [normalizar_venda_para_entrega(venda, situacoes_por_id) for venda in vendas]
-    filtradas = [
-        venda
-        for venda in normalizadas
-        if _normalize_text(venda.get("situacao")) in desejadas
-        or str(venda.get("situacao_id", "")) in situacoes_ids
-    ]
-    return filtradas
+    pedidos = listar_pedidos_gestaoclick(incluir_orcamentos=False)
+    return [pedido for pedido in pedidos if _normalize_text(pedido.get("situacao")) in desejadas]
 
 
 def buscar_venda(venda_id: str) -> dict[str, Any]:
