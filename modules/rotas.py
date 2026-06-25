@@ -1,5 +1,6 @@
 from datetime import date
 
+import pandas as pd
 import streamlit as st
 
 from services import gestaoclick_api
@@ -147,6 +148,72 @@ def render() -> None:
         prefixo = "cliente"
 
     _form_entrega(rota_id, dados, prefixo)
+
+    st.divider()
+    st.subheader("Selecionar vendas do GestaoClick")
+    st.caption("Lista vendas com situacao em andamento ou pronta entrega.")
+
+    col_buscar, col_limpar = st.columns([2, 1])
+    if col_buscar.button("Buscar vendas disponiveis"):
+        try:
+            st.session_state["vendas_disponiveis_gc"] = gestaoclick_api.listar_vendas_por_situacoes()
+            if not st.session_state["vendas_disponiveis_gc"]:
+                st.warning("Nenhuma venda em andamento ou pronta entrega foi encontrada.")
+            else:
+                st.success(f"{len(st.session_state['vendas_disponiveis_gc'])} venda(s) encontrada(s).")
+        except Exception as exc:
+            st.error(f"Nao foi possivel buscar as vendas: {exc}")
+
+    if col_limpar.button("Limpar lista"):
+        st.session_state.pop("vendas_disponiveis_gc", None)
+        st.rerun()
+
+    vendas_disponiveis = st.session_state.get("vendas_disponiveis_gc", [])
+    if vendas_disponiveis:
+        tabela = pd.DataFrame(vendas_disponiveis)
+        tabela.insert(0, "selecionar", False)
+        colunas = [
+            "selecionar",
+            "venda_id",
+            "numero_venda",
+            "cliente",
+            "telefone",
+            "endereco",
+            "cidade",
+            "estado",
+            "cep",
+            "situacao",
+        ]
+        tabela = tabela[[coluna for coluna in colunas if coluna in tabela.columns]]
+        editada = st.data_editor(
+            tabela,
+            use_container_width=True,
+            hide_index=True,
+            column_config={
+                "selecionar": st.column_config.CheckboxColumn("Selecionar"),
+                "venda_id": "ID",
+                "numero_venda": "Venda",
+                "cliente": "Cliente",
+                "situacao": "Situacao",
+            },
+            disabled=[coluna for coluna in tabela.columns if coluna != "selecionar"],
+            key="editor_vendas_gc",
+        )
+
+        selecionadas = editada[editada["selecionar"]].drop(columns=["selecionar"]).to_dict("records")
+        if st.button("Adicionar selecionadas na rota", disabled=not selecionadas):
+            total = 0
+            ignoradas = 0
+            for venda in selecionadas:
+                if not str(venda.get("cliente", "")).strip() or not str(venda.get("endereco", "")).strip():
+                    ignoradas += 1
+                    continue
+                adicionar_entrega(rota_id, {key: str(value or "") for key, value in venda.items()})
+                total += 1
+            st.success(f"{total} entrega(s) adicionada(s) a rota.")
+            if ignoradas:
+                st.warning(f"{ignoradas} venda(s) foram ignoradas por falta de cliente ou endereco.")
+            st.rerun()
 
     st.subheader("Entregas desta rota")
     entregas = listar_entregas_rota(rota_id)
