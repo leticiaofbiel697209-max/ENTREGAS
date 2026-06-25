@@ -156,7 +156,8 @@ def render() -> None:
         config_gc = gestaoclick_api.status_configuracao()
         st.caption(
             f"Integracao: URL {config_gc['url']} | Token "
-            f"{'configurado' if config_gc['token_configurado'] else 'nao configurado'}"
+            f"{'configurado' if config_gc['token_configurado'] else 'nao configurado'} | Secret token "
+            f"{'configurado' if config_gc['secret_token_configurado'] else 'nao configurado'}"
         )
     except Exception:
         st.caption("Integracao: configuracao do GestaoClick nao localizada.")
