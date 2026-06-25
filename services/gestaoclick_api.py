@@ -174,6 +174,10 @@ def _sale_status(venda: dict[str, Any]) -> str:
     return ""
 
 
+def _sale_status_id(venda: dict[str, Any]) -> str:
+    return str(_first_value(venda, ("situacao_id", "id_situacao", "status_id")) or "")
+
+
 def _sale_cliente(venda: dict[str, Any]) -> dict[str, Any]:
     cliente = venda.get("cliente")
     if isinstance(cliente, dict):
@@ -193,10 +197,13 @@ def _sale_address_source(venda: dict[str, Any]) -> dict[str, Any]:
     return venda
 
 
-def normalizar_venda_para_entrega(venda: dict[str, Any]) -> dict[str, str]:
+def normalizar_venda_para_entrega(venda: dict[str, Any], situacoes_por_id: dict[str, str] | None = None) -> dict[str, str]:
     cliente = _sale_cliente(venda)
     endereco = _sale_address_source(venda)
+    situacao_id = _sale_status_id(venda)
     status = _sale_status(venda)
+    if not status and situacoes_por_id:
+        status = situacoes_por_id.get(situacao_id, "")
 
     return {
         "venda_id": str(_first_value(venda, ("id", "venda_id", "codigo", "id_venda"))),
@@ -215,29 +222,77 @@ def normalizar_venda_para_entrega(venda: dict[str, Any]) -> dict[str, str]:
         "cep": str(_first_value(endereco, ("cep", "codigo_postal"))),
         "observacao": str(_first_value(venda, ("observacoes", "observacao", "obs"))),
         "situacao": status,
+        "situacao_id": situacao_id,
     }
+
+
+def listar_situacoes_vendas() -> list[dict[str, str]]:
+    payload = _request("GET", "situacoes_vendas")
+    situacoes = []
+    for item in _extract_items(payload):
+        situacoes.append(
+            {
+                "id": str(_first_value(item, ("id", "situacao_id"))),
+                "nome": str(_first_value(item, ("nome", "situacao", "descricao"))),
+            }
+        )
+    return situacoes
+
+
+def _listar_vendas(params: dict[str, Any] | None = None, max_paginas: int = 5) -> list[dict[str, Any]]:
+    vendas: list[dict[str, Any]] = []
+    params_base = dict(params or {})
+
+    for pagina in range(1, max_paginas + 1):
+        params_pagina = {
+            **params_base,
+            "pagina": pagina,
+            "limite": 100,
+        }
+        payload = _request("GET", "vendas", params=params_pagina)
+        itens = _extract_items(payload)
+        if not itens:
+            break
+
+        vendas.extend(itens)
+        meta = payload.get("meta") if isinstance(payload.get("meta"), dict) else {}
+        if not meta.get("proxima_pagina") and len(itens) < 100:
+            break
+
+    return vendas
 
 
 def listar_vendas_por_situacoes(situacoes: tuple[str, ...] = ("em andamento", "pronta entrega")) -> list[dict[str, str]]:
     desejadas = {_normalize_text(situacao) for situacao in situacoes}
+    situacoes_api = listar_situacoes_vendas()
+    situacoes_por_id = {item["id"]: item["nome"] for item in situacoes_api if item.get("id")}
+    situacoes_ids = [
+        item["id"]
+        for item in situacoes_api
+        if item.get("id") and _normalize_text(item.get("nome")) in desejadas
+    ]
+
     vendas: list[dict[str, Any]] = []
+    vistos: set[str] = set()
 
-    # Algumas contas aceitam filtros, outras retornam a lista geral; por isso filtramos tambem no app.
-    for params in (
-        {"limite": 100},
-        {"limit": 100},
-        {},
-    ):
-        payload = _request("GET", "vendas", params=params)
-        vendas = _extract_items(payload)
-        if vendas:
-            break
+    # Quando sabemos o ID da situacao, pedimos direto para a API.
+    for situacao_id in situacoes_ids:
+        for venda in _listar_vendas({"situacao_id": situacao_id}):
+            venda_id = str(_first_value(venda, ("id", "codigo", "venda_id", "id_venda")))
+            if venda_id not in vistos:
+                vendas.append(venda)
+                vistos.add(venda_id)
 
-    normalizadas = [normalizar_venda_para_entrega(venda) for venda in vendas]
+    # Fallback: busca geral e filtra localmente.
+    if not vendas:
+        vendas = _listar_vendas()
+
+    normalizadas = [normalizar_venda_para_entrega(venda, situacoes_por_id) for venda in vendas]
     filtradas = [
         venda
         for venda in normalizadas
         if _normalize_text(venda.get("situacao")) in desejadas
+        or str(venda.get("situacao_id", "")) in situacoes_ids
     ]
     return filtradas
 
