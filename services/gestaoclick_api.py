@@ -14,15 +14,30 @@ class GestaoClickAPIError(RuntimeError):
     """Erro padronizado para falhas de comunicacao com o GestaoClick."""
 
 
+def get_config(name: str, default: str = "") -> str:
+    """Le configuracoes do .env, variaveis do ambiente ou Secrets do Streamlit Cloud."""
+    value = os.getenv(name)
+    if value not in (None, ""):
+        return str(value)
+
+    try:
+        import streamlit as st
+
+        secret_value = st.secrets.get(name, default)
+        return str(secret_value) if secret_value not in (None, "") else default
+    except Exception:
+        return default
+
+
 def _base_url() -> str:
-    url = os.getenv("GESTAOCLICK_URL", "").strip().rstrip("/")
+    url = get_config("GESTAOCLICK_URL", "").strip().rstrip("/")
     if not url:
         raise GestaoClickAPIError("GESTAOCLICK_URL nao configurado.")
     return url
 
 
 def _headers() -> dict[str, str]:
-    token = os.getenv("GESTAOCLICK_TOKEN", "").strip()
+    token = get_config("GESTAOCLICK_TOKEN", "").strip()
     if not token:
         raise GestaoClickAPIError("GESTAOCLICK_TOKEN nao configurado.")
     return {
@@ -35,7 +50,7 @@ def _headers() -> dict[str, str]:
 
 def _timeout() -> int:
     try:
-        return int(os.getenv("GESTAOCLICK_TIMEOUT", "30"))
+        return int(get_config("GESTAOCLICK_TIMEOUT", "30"))
     except ValueError:
         return 30
 

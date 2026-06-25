@@ -1,11 +1,11 @@
 from __future__ import annotations
 
+import os
 from datetime import date, datetime
 from typing import Any
 
 import pandas as pd
 
-from services.config import get_config
 from services.db import get_connection
 
 
@@ -13,6 +13,21 @@ STATUS_PENDENTE = "PENDENTE"
 STATUS_EM_ROTA = "EM ROTA"
 STATUS_ENTREGUE = "ENTREGUE"
 STATUS_FALHA = "FALHA"
+
+
+def get_config(name: str, default: str = "") -> str:
+    """Le configuracoes do .env, variaveis do ambiente ou Secrets do Streamlit Cloud."""
+    value = os.getenv(name)
+    if value not in (None, ""):
+        return str(value)
+
+    try:
+        import streamlit as st
+
+        secret_value = st.secrets.get(name, default)
+        return str(secret_value) if secret_value not in (None, "") else default
+    except Exception:
+        return default
 
 
 def autenticar_admin(usuario: str, senha: str) -> bool:
