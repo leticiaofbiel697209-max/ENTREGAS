@@ -17,15 +17,29 @@ STATUS_FALHA = "FALHA"
 
 def get_config(name: str, default: str = "") -> str:
     """Le configuracoes do .env, variaveis do ambiente ou Secrets do Streamlit Cloud."""
-    value = os.getenv(name)
+    candidates = (name, name.lower())
+
+    value = os.getenv(name) or os.getenv(name.lower())
     if value not in (None, ""):
         return str(value)
 
     try:
         import streamlit as st
 
-        secret_value = st.secrets.get(name, default)
-        return str(secret_value) if secret_value not in (None, "") else default
+        for candidate in candidates:
+            secret_value = st.secrets.get(candidate)
+            if secret_value not in (None, ""):
+                return str(secret_value)
+
+        # Tambem aceita Secrets agrupados como [admin].
+        for group_name in ("admin", "ADMIN"):
+            group = st.secrets.get(group_name, {})
+            if hasattr(group, "get"):
+                for candidate in candidates:
+                    grouped_value = group.get(candidate)
+                    if grouped_value not in (None, ""):
+                        return str(grouped_value)
+        return default
     except Exception:
         return default
 
