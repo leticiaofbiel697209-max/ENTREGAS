@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import unicodedata
 from typing import Any
 
 import requests
@@ -89,12 +90,129 @@ def _unwrap(payload: dict[str, Any]) -> dict[str, Any]:
     return payload
 
 
+def _extract_items(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    for key in ("data", "dados", "retorno", "vendas", "items", "results"):
+        value = payload.get(key)
+        if isinstance(value, list):
+            return [item for item in value if isinstance(item, dict)]
+        if isinstance(value, dict):
+            nested = _extract_items(value)
+            if nested:
+                return nested
+    return []
+
+
 def _first_value(data: dict[str, Any], keys: tuple[str, ...]) -> Any:
     for key in keys:
         value = data.get(key)
         if value not in (None, ""):
             return value
     return ""
+
+
+def _normalize_text(value: Any) -> str:
+    text = str(value or "").strip().lower()
+    text = unicodedata.normalize("NFKD", text)
+    return "".join(char for char in text if not unicodedata.combining(char))
+
+
+def _field_text(data: dict[str, Any], keys: tuple[str, ...]) -> str:
+    value = _first_value(data, keys)
+    if isinstance(value, dict):
+        return str(_first_value(value, ("nome", "descricao", "situacao", "status", "titulo")))
+    return str(value or "")
+
+
+def _sale_status(venda: dict[str, Any]) -> str:
+    direct = _field_text(
+        venda,
+        (
+            "situacao",
+            "situacao_nome",
+            "nome_situacao",
+            "status",
+            "status_nome",
+            "descricao_situacao",
+        ),
+    )
+    if direct:
+        return direct
+
+    for key in ("situacao", "status"):
+        value = venda.get(key)
+        if isinstance(value, dict):
+            nested = _field_text(value, ("nome", "descricao", "titulo", "status", "situacao"))
+            if nested:
+                return nested
+    return ""
+
+
+def _sale_cliente(venda: dict[str, Any]) -> dict[str, Any]:
+    cliente = venda.get("cliente")
+    if isinstance(cliente, dict):
+        return cliente
+    return {}
+
+
+def _sale_address_source(venda: dict[str, Any]) -> dict[str, Any]:
+    for key in ("endereco_entrega", "endereco", "endereco_cliente", "cliente_endereco"):
+        value = venda.get(key)
+        if isinstance(value, dict):
+            return value
+    cliente = _sale_cliente(venda)
+    endereco_cliente = cliente.get("endereco")
+    if isinstance(endereco_cliente, dict):
+        return endereco_cliente
+    return venda
+
+
+def normalizar_venda_para_entrega(venda: dict[str, Any]) -> dict[str, str]:
+    cliente = _sale_cliente(venda)
+    endereco = _sale_address_source(venda)
+    status = _sale_status(venda)
+
+    return {
+        "venda_id": str(_first_value(venda, ("id", "venda_id", "codigo", "id_venda"))),
+        "numero_venda": str(_first_value(venda, ("numero", "numero_venda", "codigo", "id"))),
+        "cliente": str(
+            _first_value(venda, ("cliente_nome", "nome_cliente", "razao_social"))
+            or _first_value(cliente, ("nome", "razao_social", "fantasia"))
+        ),
+        "telefone": str(
+            _first_value(venda, ("telefone", "celular", "fone"))
+            or _first_value(cliente, ("telefone", "celular", "fone"))
+        ),
+        "endereco": str(_first_value(endereco, ("endereco", "logradouro", "rua", "endereco_entrega"))),
+        "cidade": str(_first_value(endereco, ("cidade", "municipio"))),
+        "estado": str(_first_value(endereco, ("estado", "uf"))),
+        "cep": str(_first_value(endereco, ("cep", "codigo_postal"))),
+        "observacao": str(_first_value(venda, ("observacoes", "observacao", "obs"))),
+        "situacao": status,
+    }
+
+
+def listar_vendas_por_situacoes(situacoes: tuple[str, ...] = ("em andamento", "pronta entrega")) -> list[dict[str, str]]:
+    desejadas = {_normalize_text(situacao) for situacao in situacoes}
+    vendas: list[dict[str, Any]] = []
+
+    # Algumas contas aceitam filtros, outras retornam a lista geral; por isso filtramos tambem no app.
+    for params in (
+        {"limite": 100},
+        {"limit": 100},
+        {},
+    ):
+        payload = _request("GET", "vendas", params=params)
+        vendas = _extract_items(payload)
+        if vendas:
+            break
+
+    normalizadas = [normalizar_venda_para_entrega(venda) for venda in vendas]
+    filtradas = [
+        venda
+        for venda in normalizadas
+        if _normalize_text(venda.get("situacao")) in desejadas
+    ]
+    return filtradas
 
 
 def buscar_venda(venda_id: str) -> dict[str, Any]:
@@ -107,20 +225,9 @@ def buscar_cliente(cliente_id: str) -> dict[str, Any]:
 
 def buscar_endereco_venda(venda_id: str) -> dict[str, Any]:
     venda = buscar_venda(venda_id)
-    cliente = venda.get("cliente") if isinstance(venda.get("cliente"), dict) else {}
-    endereco = venda.get("endereco_entrega") if isinstance(venda.get("endereco_entrega"), dict) else {}
-    fonte = endereco or venda or cliente
-
-    return {
-        "venda_id": str(_first_value(venda, ("id", "venda_id", "codigo")) or venda_id),
-        "numero_venda": str(_first_value(venda, ("numero", "numero_venda", "codigo", "id"))),
-        "cliente": str(_first_value(venda, ("cliente_nome", "nome_cliente")) or _first_value(cliente, ("nome", "razao_social"))),
-        "telefone": str(_first_value(venda, ("telefone", "celular")) or _first_value(cliente, ("telefone", "celular"))),
-        "endereco": str(_first_value(fonte, ("endereco", "logradouro", "rua"))),
-        "cidade": str(_first_value(fonte, ("cidade", "municipio"))),
-        "estado": str(_first_value(fonte, ("estado", "uf"))),
-        "cep": str(_first_value(fonte, ("cep", "codigo_postal"))),
-    }
+    dados = normalizar_venda_para_entrega(venda)
+    dados["venda_id"] = dados.get("venda_id") or venda_id
+    return dados
 
 
 def buscar_endereco_cliente(cliente_id: str) -> dict[str, Any]:
