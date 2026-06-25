@@ -41,11 +41,18 @@ def _form_entregue(entrega: dict) -> None:
             return
 
         api_retorno = {}
-        if entrega.get("venda_id"):
+        origem_pedido = str(entrega.get("origem_pedido") or "").lower()
+        if entrega.get("venda_id") and origem_pedido != "ordem_servico":
             try:
-                api_retorno = gestaoclick_api.atualizar_status_venda(entrega["venda_id"], "ENTREGUE")
+                api_retorno = gestaoclick_api.atualizar_status_venda(
+                    entrega["venda_id"],
+                    "ENTREGUE",
+                    recebido_por=recebido_por.strip(),
+                )
             except Exception as exc:
                 api_retorno = {"erro": str(exc)}
+        elif origem_pedido == "ordem_servico":
+            api_retorno = {"info": "Origem ordem_servico: status atualizado apenas no controle de entregas."}
 
         registrar_entrega_concluida(
             entrega["id"],
