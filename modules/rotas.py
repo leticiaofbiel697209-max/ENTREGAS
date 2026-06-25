@@ -152,6 +152,14 @@ def render() -> None:
     st.divider()
     st.subheader("Selecionar vendas do GestaoClick")
     st.caption("Lista vendas com situacao em andamento ou pronta entrega.")
+    try:
+        config_gc = gestaoclick_api.status_configuracao()
+        st.caption(
+            f"Integracao: URL {config_gc['url']} | Token "
+            f"{'configurado' if config_gc['token_configurado'] else 'nao configurado'}"
+        )
+    except Exception:
+        st.caption("Integracao: configuracao do GestaoClick nao localizada.")
 
     col_buscar, col_limpar = st.columns([2, 1])
     if col_buscar.button("Buscar vendas disponiveis"):
