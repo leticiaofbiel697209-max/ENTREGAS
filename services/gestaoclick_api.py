@@ -55,10 +55,12 @@ def _base_url() -> str:
 def status_configuracao() -> dict[str, str | bool]:
     token = get_config("GESTAOCLICK_TOKEN", "").strip()
     secret_token = get_config("GESTAOCLICK_SECRET_TOKEN", "").strip()
+    loja_id = get_config("GESTAOCLICK_LOJA_ID", "").strip()
     return {
         "url": _base_url(),
         "token_configurado": bool(token),
         "secret_token_configurado": bool(secret_token),
+        "loja_id_configurado": bool(loja_id),
     }
 
 
@@ -135,6 +137,18 @@ def _extract_items(payload: dict[str, Any]) -> list[dict[str, Any]]:
             if nested:
                 return nested
     return []
+
+
+def _get_first_success(endpoint: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
+    last_error: Exception | None = None
+    for candidate in _endpoint_candidates(endpoint):
+        try:
+            return _request("GET", candidate, params=params or {})
+        except Exception as exc:
+            last_error = exc
+    if last_error:
+        raise last_error
+    return {"data": []}
 
 
 def _first_value(data: dict[str, Any], keys: tuple[str, ...]) -> Any:
@@ -220,6 +234,7 @@ def normalizar_venda_para_entrega(
     return {
         "venda_id": str(_first_value(venda, ("id", "venda_id", "codigo", "id_venda"))),
         "numero_venda": str(_first_value(venda, ("numero", "numero_venda", "codigo", "id"))),
+        "cliente_id": str(_first_value(venda, ("cliente_id", "id_cliente"))),
         "cliente": str(
             _first_value(venda, ("cliente_nome", "nome_cliente", "razao_social"))
             or _first_value(cliente, ("nome", "razao_social", "fantasia"))
@@ -238,7 +253,72 @@ def normalizar_venda_para_entrega(
         "data": str(_first_value(venda, ("data", "data_venda", "data_cadastro"))),
         "valor_total": str(_first_value(venda, ("valor_total", "valor", "total"))),
         "origem": origem,
+        "loja_id": str(_first_value(venda, ("loja_id", "id_loja"))),
+        "nome_loja": str(_first_value(venda, ("nome_loja", "loja"))),
     }
+
+
+def _completar_com_cliente(dados: dict[str, str], cliente_id: str) -> dict[str, str]:
+    if not cliente_id:
+        return dados
+
+    precisa_endereco = not dados.get("endereco") or "nao informado" in _normalize_text(dados.get("endereco"))
+    precisa_telefone = not dados.get("telefone")
+    if not precisa_endereco and not precisa_telefone:
+        return dados
+
+    try:
+        cliente = buscar_cliente(cliente_id)
+    except Exception:
+        return dados
+
+    endereco_cliente = cliente.get("endereco") if isinstance(cliente.get("endereco"), dict) else {}
+    fonte = endereco_cliente or cliente
+
+    if not dados.get("cliente"):
+        dados["cliente"] = str(_first_value(cliente, ("nome", "razao_social", "fantasia")))
+    if not dados.get("telefone"):
+        dados["telefone"] = str(_first_value(cliente, ("telefone", "celular", "fone")))
+    if precisa_endereco:
+        dados["endereco"] = str(_first_value(fonte, ("endereco", "logradouro", "rua")))
+        dados["cidade"] = str(_first_value(fonte, ("cidade", "municipio")))
+        dados["estado"] = str(_first_value(fonte, ("estado", "uf")))
+        dados["cep"] = str(_first_value(fonte, ("cep", "codigo_postal")))
+
+    return dados
+
+
+def listar_lojas() -> list[dict[str, str]]:
+    payload = _get_first_success("lojas")
+    lojas = []
+    for item in _extract_items(payload):
+        lojas.append(
+            {
+                "id": str(_first_value(item, ("id", "loja_id", "codigo"))),
+                "nome": str(_first_value(item, ("nome", "nome_loja", "razao_social", "fantasia"))),
+            }
+        )
+    return lojas
+
+
+def obter_loja_alvo() -> dict[str, str]:
+    loja_id_config = get_config("GESTAOCLICK_LOJA_ID", "").strip()
+    if loja_id_config:
+        return {"id": loja_id_config, "nome": "NOVAPRINT"}
+
+    lojas = listar_lojas()
+    for loja in lojas:
+        if _normalize_text(loja.get("nome")) == "novaprint":
+            return loja
+    for loja in lojas:
+        if "novaprint" in _normalize_text(loja.get("nome")):
+            return loja
+
+    nomes = ", ".join(loja.get("nome", "") for loja in lojas if loja.get("nome"))
+    detalhe = f" Lojas encontradas: {nomes}." if nomes else ""
+    raise GestaoClickAPIError(
+        "Nao encontrei a loja NOVAPRINT na API. Configure GESTAOCLICK_LOJA_ID nos Secrets." + detalhe
+    )
 
 
 def _listar_situacoes(endpoint: str) -> list[dict[str, str]]:
@@ -318,6 +398,8 @@ def _buscar_pedidos_endpoint(
     endpoint_situacoes: str,
     origem: str,
     params_extras: dict[str, Any] | None,
+    data_inicio: date | None,
+    loja_id: str,
     max_paginas: int,
 ) -> list[dict[str, str]]:
     situacoes = _listar_situacoes(endpoint_situacoes)
@@ -325,7 +407,10 @@ def _buscar_pedidos_endpoint(
     params: dict[str, Any] = {
         "ordenacao": "data",
         "direcao": "desc",
+        "loja_id": loja_id,
     }
+    if data_inicio:
+        params["data_inicio"] = data_inicio.isoformat()
     params.update(params_extras or {})
 
     registros = _listar_registros(endpoint, params=params, max_paginas=max_paginas)
@@ -336,14 +421,20 @@ def _buscar_pedidos_endpoint(
 
 
 def listar_pedidos_gestaoclick(
+    data_inicio: date | None = None,
     incluir_ordens_servico: bool = True,
     max_paginas: int = 10,
 ) -> list[dict[str, str]]:
+    loja = obter_loja_alvo()
+    loja_id = loja["id"]
+
     pedidos = _buscar_pedidos_endpoint(
         endpoint="vendas",
         endpoint_situacoes="situacoes_vendas",
         origem="venda_produto",
         params_extras={"tipo": "produto"},
+        data_inicio=data_inicio,
+        loja_id=loja_id,
         max_paginas=max_paginas,
     )
 
@@ -354,6 +445,8 @@ def listar_pedidos_gestaoclick(
                 endpoint_situacoes="situacoes_ordens_servicos",
                 origem="ordem_servico",
                 params_extras=None,
+                data_inicio=data_inicio,
+                loja_id=loja_id,
                 max_paginas=max_paginas,
             )
         )
@@ -361,12 +454,35 @@ def listar_pedidos_gestaoclick(
     pedidos_unicos: list[dict[str, str]] = []
     vistos: set[tuple[str, str]] = set()
     for pedido in pedidos:
+        nome_loja = _normalize_text(pedido.get("nome_loja"))
+        pedido_loja_id = str(pedido.get("loja_id", ""))
+        if pedido_loja_id and pedido_loja_id != loja_id:
+            continue
+        if nome_loja and "novaprint" not in nome_loja:
+            continue
         chave = (pedido.get("origem", ""), pedido.get("venda_id", "") or pedido.get("numero_venda", ""))
         if chave not in vistos:
             pedidos_unicos.append(pedido)
             vistos.add(chave)
 
     return pedidos_unicos
+
+
+def buscar_pedido_detalhado(origem: str, pedido_id: str) -> dict[str, str]:
+    origem_normalizada = _normalize_text(origem)
+    if origem_normalizada == "ordem_servico":
+        payload = _get_first_success(f"ordens_servicos/{pedido_id}")
+        situacoes = listar_situacoes_ordens_servicos()
+        origem_retorno = "ordem_servico"
+    else:
+        payload = _get_first_success(f"vendas/{pedido_id}")
+        situacoes = listar_situacoes_vendas()
+        origem_retorno = "venda_produto"
+
+    situacoes_por_id = {item["id"]: item["nome"] for item in situacoes if item.get("id")}
+    dados = normalizar_venda_para_entrega(_unwrap(payload), situacoes_por_id, origem=origem_retorno)
+    dados["venda_id"] = dados.get("venda_id") or pedido_id
+    return _completar_com_cliente(dados, dados.get("cliente_id", ""))
 
 
 def listar_vendas_por_situacoes(situacoes: tuple[str, ...] = ("em andamento", "pronta entrega")) -> list[dict[str, str]]:
@@ -387,7 +503,7 @@ def buscar_endereco_venda(venda_id: str) -> dict[str, Any]:
     venda = buscar_venda(venda_id)
     dados = normalizar_venda_para_entrega(venda)
     dados["venda_id"] = dados.get("venda_id") or venda_id
-    return dados
+    return _completar_com_cliente(dados, dados.get("cliente_id", ""))
 
 
 def buscar_endereco_cliente(cliente_id: str) -> dict[str, Any]:
