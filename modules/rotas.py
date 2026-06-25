@@ -45,6 +45,13 @@ def _dados_vazios() -> dict[str, str]:
     }
 
 
+def _filtrar_por_data(tabela: pd.DataFrame, data_inicio: date) -> pd.DataFrame:
+    if "data" not in tabela.columns or tabela.empty:
+        return tabela
+    datas = pd.to_datetime(tabela["data"], errors="coerce", dayfirst=True).dt.date
+    return tabela[datas.isna() | (datas >= data_inicio)]
+
+
 def _form_entrega(rota_id: int, dados: dict[str, str], prefixo: str) -> None:
     with st.form(f"form_entrega_{prefixo}"):
         col1, col2 = st.columns(2)
@@ -150,8 +157,8 @@ def render() -> None:
     _form_entrega(rota_id, dados, prefixo)
 
     st.divider()
-    st.subheader("Selecionar pedidos do GestaoClick")
-    st.caption("Busca vendas e orcamentos do GestaoClick. Use os filtros para escolher o que entra na rota.")
+    st.subheader("Selecionar vendas e ordens do GestaoClick")
+    st.caption("Busca Vendas > Produtos e, se marcado, Ordens de servico. Use os filtros para escolher o que entra na rota.")
     try:
         config_gc = gestaoclick_api.status_configuracao()
         st.caption(
@@ -162,21 +169,20 @@ def render() -> None:
     except Exception:
         st.caption("Integracao: configuracao do GestaoClick nao localizada.")
 
-    col_data, col_orcamentos, col_paginas = st.columns([2, 1, 1])
-    data_inicio_gc = col_data.date_input("Buscar a partir de", value=date.today().replace(day=1))
-    incluir_orcamentos = col_orcamentos.checkbox("Incluir orcamentos", value=True)
+    col_data, col_os, col_paginas = st.columns([2, 1, 1])
+    data_inicio_gc = col_data.date_input("Filtrar a partir de", value=date.today().replace(day=1))
+    incluir_os = col_os.checkbox("Incluir O.S.", value=True)
     max_paginas = col_paginas.number_input("Paginas", min_value=1, max_value=30, value=10, step=1)
 
     col_buscar, col_limpar = st.columns([2, 1])
     if col_buscar.button("Buscar pedidos disponiveis"):
         try:
             st.session_state["vendas_disponiveis_gc"] = gestaoclick_api.listar_pedidos_gestaoclick(
-                data_inicio=data_inicio_gc,
-                incluir_orcamentos=incluir_orcamentos,
+                incluir_ordens_servico=incluir_os,
                 max_paginas=int(max_paginas),
             )
             if not st.session_state["vendas_disponiveis_gc"]:
-                st.warning("Nenhum pedido foi retornado pela API para o periodo informado.")
+                st.warning("Nenhum pedido foi retornado pela API.")
             else:
                 st.success(f"{len(st.session_state['vendas_disponiveis_gc'])} pedido(s) encontrado(s).")
         except Exception as exc:
@@ -189,13 +195,24 @@ def render() -> None:
     vendas_disponiveis = st.session_state.get("vendas_disponiveis_gc", [])
     if vendas_disponiveis:
         tabela = pd.DataFrame(vendas_disponiveis)
+        tabela = _filtrar_por_data(tabela, data_inicio_gc)
         situacoes_disponiveis = sorted([str(valor) for valor in tabela["situacao"].dropna().unique() if str(valor).strip()])
         origens_disponiveis = sorted([str(valor) for valor in tabela["origem"].dropna().unique() if str(valor).strip()])
 
         default_situacoes = [
             valor
             for valor in situacoes_disponiveis
-            if valor.strip().lower() in ("em andamento", "pronta entrega")
+            if valor.strip().lower() in (
+                "em andamento",
+                "pronta entrega",
+                "andamento",
+                "em aberto",
+                "a caminho do cliente",
+                "locacao - entrega de equipamento",
+                "locação - entrega de equipamento",
+                "locacao - retirada de equipamento",
+                "locação - retirada de equipamento",
+            )
         ]
         if not default_situacoes:
             default_situacoes = situacoes_disponiveis
@@ -222,6 +239,7 @@ def render() -> None:
 
         st.caption(
             f"Exibindo {len(tabela)} de {len(vendas_disponiveis)} pedido(s). "
+            f"Origens: {', '.join(origens_disponiveis) if origens_disponiveis else 'sem origem'}. "
             f"Situacoes recebidas: {', '.join(situacoes_disponiveis) if situacoes_disponiveis else 'sem situacao'}."
         )
 
