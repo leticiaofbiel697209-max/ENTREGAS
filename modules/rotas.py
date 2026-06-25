@@ -150,8 +150,8 @@ def render() -> None:
     _form_entrega(rota_id, dados, prefixo)
 
     st.divider()
-    st.subheader("Selecionar vendas do GestaoClick")
-    st.caption("Lista vendas com situacao em andamento ou pronta entrega.")
+    st.subheader("Selecionar pedidos do GestaoClick")
+    st.caption("Busca vendas e orcamentos do GestaoClick. Use os filtros para escolher o que entra na rota.")
     try:
         config_gc = gestaoclick_api.status_configuracao()
         st.caption(
@@ -162,16 +162,25 @@ def render() -> None:
     except Exception:
         st.caption("Integracao: configuracao do GestaoClick nao localizada.")
 
+    col_data, col_orcamentos, col_paginas = st.columns([2, 1, 1])
+    data_inicio_gc = col_data.date_input("Buscar a partir de", value=date.today().replace(day=1))
+    incluir_orcamentos = col_orcamentos.checkbox("Incluir orcamentos", value=True)
+    max_paginas = col_paginas.number_input("Paginas", min_value=1, max_value=30, value=10, step=1)
+
     col_buscar, col_limpar = st.columns([2, 1])
-    if col_buscar.button("Buscar vendas disponiveis"):
+    if col_buscar.button("Buscar pedidos disponiveis"):
         try:
-            st.session_state["vendas_disponiveis_gc"] = gestaoclick_api.listar_vendas_por_situacoes()
+            st.session_state["vendas_disponiveis_gc"] = gestaoclick_api.listar_pedidos_gestaoclick(
+                data_inicio=data_inicio_gc,
+                incluir_orcamentos=incluir_orcamentos,
+                max_paginas=int(max_paginas),
+            )
             if not st.session_state["vendas_disponiveis_gc"]:
-                st.warning("Nenhuma venda em andamento ou pronta entrega foi encontrada.")
+                st.warning("Nenhum pedido foi retornado pela API para o periodo informado.")
             else:
-                st.success(f"{len(st.session_state['vendas_disponiveis_gc'])} venda(s) encontrada(s).")
+                st.success(f"{len(st.session_state['vendas_disponiveis_gc'])} pedido(s) encontrado(s).")
         except Exception as exc:
-            st.error(f"Nao foi possivel buscar as vendas: {exc}")
+            st.error(f"Nao foi possivel buscar os pedidos: {exc}")
 
     if col_limpar.button("Limpar lista"):
         st.session_state.pop("vendas_disponiveis_gc", None)
@@ -180,49 +189,96 @@ def render() -> None:
     vendas_disponiveis = st.session_state.get("vendas_disponiveis_gc", [])
     if vendas_disponiveis:
         tabela = pd.DataFrame(vendas_disponiveis)
-        tabela.insert(0, "selecionar", False)
-        colunas = [
-            "selecionar",
-            "venda_id",
-            "numero_venda",
-            "cliente",
-            "telefone",
-            "endereco",
-            "cidade",
-            "estado",
-            "cep",
-            "situacao",
+        situacoes_disponiveis = sorted([str(valor) for valor in tabela["situacao"].dropna().unique() if str(valor).strip()])
+        origens_disponiveis = sorted([str(valor) for valor in tabela["origem"].dropna().unique() if str(valor).strip()])
+
+        default_situacoes = [
+            valor
+            for valor in situacoes_disponiveis
+            if valor.strip().lower() in ("em andamento", "pronta entrega")
         ]
-        tabela = tabela[[coluna for coluna in colunas if coluna in tabela.columns]]
-        editada = st.data_editor(
-            tabela,
-            use_container_width=True,
-            hide_index=True,
-            column_config={
-                "selecionar": st.column_config.CheckboxColumn("Selecionar"),
-                "venda_id": "ID",
-                "numero_venda": "Venda",
-                "cliente": "Cliente",
-                "situacao": "Situacao",
-            },
-            disabled=[coluna for coluna in tabela.columns if coluna != "selecionar"],
-            key="editor_vendas_gc",
+        if not default_situacoes:
+            default_situacoes = situacoes_disponiveis
+
+        filtro_col1, filtro_col2, filtro_col3 = st.columns([3, 2, 2])
+        situacoes_filtradas = filtro_col1.multiselect(
+            "Situacao",
+            situacoes_disponiveis,
+            default=default_situacoes,
+        )
+        origens_filtradas = filtro_col2.multiselect(
+            "Origem",
+            origens_disponiveis,
+            default=origens_disponiveis,
+        )
+        busca_cliente = filtro_col3.text_input("Filtrar cliente")
+
+        if situacoes_filtradas:
+            tabela = tabela[tabela["situacao"].isin(situacoes_filtradas)]
+        if origens_filtradas:
+            tabela = tabela[tabela["origem"].isin(origens_filtradas)]
+        if busca_cliente.strip():
+            tabela = tabela[tabela["cliente"].str.contains(busca_cliente.strip(), case=False, na=False)]
+
+        st.caption(
+            f"Exibindo {len(tabela)} de {len(vendas_disponiveis)} pedido(s). "
+            f"Situacoes recebidas: {', '.join(situacoes_disponiveis) if situacoes_disponiveis else 'sem situacao'}."
         )
 
-        selecionadas = editada[editada["selecionar"]].drop(columns=["selecionar"]).to_dict("records")
-        if st.button("Adicionar selecionadas na rota", disabled=not selecionadas):
-            total = 0
-            ignoradas = 0
-            for venda in selecionadas:
-                if not str(venda.get("cliente", "")).strip() or not str(venda.get("endereco", "")).strip():
-                    ignoradas += 1
-                    continue
-                adicionar_entrega(rota_id, {key: str(value or "") for key, value in venda.items()})
-                total += 1
-            st.success(f"{total} entrega(s) adicionada(s) a rota.")
-            if ignoradas:
-                st.warning(f"{ignoradas} venda(s) foram ignoradas por falta de cliente ou endereco.")
-            st.rerun()
+        if tabela.empty:
+            st.warning("Nenhum pedido ficou dentro dos filtros selecionados.")
+        else:
+            tabela.insert(0, "selecionar", False)
+            colunas = [
+                "selecionar",
+                "origem",
+                "venda_id",
+                "numero_venda",
+                "cliente",
+                "data",
+                "valor_total",
+                "telefone",
+                "endereco",
+                "cidade",
+                "estado",
+                "cep",
+                "situacao",
+            ]
+            tabela = tabela[[coluna for coluna in colunas if coluna in tabela.columns]]
+            editada = st.data_editor(
+                tabela,
+                use_container_width=True,
+                hide_index=True,
+                column_config={
+                    "selecionar": st.column_config.CheckboxColumn("Selecionar"),
+                    "venda_id": "ID",
+                    "numero_venda": "Numero",
+                    "cliente": "Cliente",
+                    "situacao": "Situacao",
+                    "origem": "Origem",
+                    "data": "Data",
+                    "valor_total": "Valor",
+                },
+                disabled=[coluna for coluna in tabela.columns if coluna != "selecionar"],
+                key="editor_vendas_gc",
+            )
+
+            selecionadas = editada[editada["selecionar"]].drop(columns=["selecionar"]).to_dict("records")
+            if st.button("Adicionar selecionadas na rota", disabled=not selecionadas):
+                total = 0
+                sem_endereco = 0
+                for venda in selecionadas:
+                    if not str(venda.get("cliente", "")).strip():
+                        venda["cliente"] = "Cliente nao informado"
+                    if not str(venda.get("endereco", "")).strip():
+                        venda["endereco"] = "Endereco nao informado no GestaoClick"
+                        sem_endereco += 1
+                    adicionar_entrega(rota_id, {key: str(value or "") for key, value in venda.items()})
+                    total += 1
+                st.success(f"{total} entrega(s) adicionada(s) a rota.")
+                if sem_endereco:
+                    st.warning(f"{sem_endereco} entrega(s) entraram sem endereco retornado pela API.")
+                st.rerun()
 
     st.subheader("Entregas desta rota")
     entregas = listar_entregas_rota(rota_id)
