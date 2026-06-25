@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import os
 import unicodedata
-from datetime import date, timedelta
+from datetime import date
 from typing import Any
 
 import requests
@@ -106,6 +106,13 @@ def _request(method: str, path: str, **kwargs: Any) -> dict[str, Any]:
     if isinstance(payload, dict):
         return payload
     return {"dados": payload}
+
+
+def _endpoint_candidates(endpoint: str) -> tuple[str, ...]:
+    clean = endpoint.strip("/")
+    if clean.startswith("api/"):
+        return (clean,)
+    return (clean, f"api/{clean}")
 
 
 def _unwrap(payload: dict[str, Any]) -> dict[str, Any]:
@@ -235,7 +242,20 @@ def normalizar_venda_para_entrega(
 
 
 def _listar_situacoes(endpoint: str) -> list[dict[str, str]]:
-    payload = _request("GET", endpoint)
+    payload = None
+    last_error: Exception | None = None
+    for candidate in _endpoint_candidates(endpoint):
+        try:
+            payload = _request("GET", candidate)
+            if _extract_items(payload):
+                break
+        except Exception as exc:
+            last_error = exc
+    if payload is None:
+        if last_error:
+            raise last_error
+        return []
+
     situacoes = []
     for item in _extract_items(payload):
         situacoes.append(
@@ -255,34 +275,49 @@ def listar_situacoes_orcamentos() -> list[dict[str, str]]:
     return _listar_situacoes("situacoes_orcamentos")
 
 
+def listar_situacoes_ordens_servicos() -> list[dict[str, str]]:
+    return _listar_situacoes("situacoes_ordens_servicos")
+
+
 def _listar_registros(endpoint: str, params: dict[str, Any] | None = None, max_paginas: int = 10) -> list[dict[str, Any]]:
-    registros: list[dict[str, Any]] = []
-    params_base = dict(params or {})
+    last_error: Exception | None = None
+    for candidate in _endpoint_candidates(endpoint):
+        registros: list[dict[str, Any]] = []
+        params_base = dict(params or {})
 
-    for pagina in range(1, max_paginas + 1):
-        params_pagina = {
-            **params_base,
-            "pagina": pagina,
-            "limite": 100,
-        }
-        payload = _request("GET", endpoint, params=params_pagina)
-        itens = _extract_items(payload)
-        if not itens:
-            break
+        try:
+            for pagina in range(1, max_paginas + 1):
+                params_pagina = {
+                    **params_base,
+                    "pagina": pagina,
+                    "limite": 100,
+                }
+                payload = _request("GET", candidate, params=params_pagina)
+                itens = _extract_items(payload)
+                if not itens:
+                    break
 
-        registros.extend(itens)
-        meta = payload.get("meta") if isinstance(payload.get("meta"), dict) else {}
-        if not meta.get("proxima_pagina"):
-            break
+                registros.extend(itens)
+                meta = payload.get("meta") if isinstance(payload.get("meta"), dict) else {}
+                if not meta.get("proxima_pagina"):
+                    break
+        except Exception as exc:
+            last_error = exc
+            continue
 
-    return registros
+        if registros:
+            return registros
+
+    if last_error:
+        raise last_error
+    return []
 
 
 def _buscar_pedidos_endpoint(
     endpoint: str,
     endpoint_situacoes: str,
     origem: str,
-    data_inicio: date | None,
+    params_extras: dict[str, Any] | None,
     max_paginas: int,
 ) -> list[dict[str, str]]:
     situacoes = _listar_situacoes(endpoint_situacoes)
@@ -291,8 +326,7 @@ def _buscar_pedidos_endpoint(
         "ordenacao": "data",
         "direcao": "desc",
     }
-    if data_inicio:
-        params["data_inicio"] = data_inicio.isoformat()
+    params.update(params_extras or {})
 
     registros = _listar_registros(endpoint, params=params, max_paginas=max_paginas)
     return [
@@ -302,28 +336,24 @@ def _buscar_pedidos_endpoint(
 
 
 def listar_pedidos_gestaoclick(
-    data_inicio: date | None = None,
-    incluir_orcamentos: bool = True,
+    incluir_ordens_servico: bool = True,
     max_paginas: int = 10,
 ) -> list[dict[str, str]]:
-    if data_inicio is None:
-        data_inicio = date.today() - timedelta(days=180)
-
     pedidos = _buscar_pedidos_endpoint(
         endpoint="vendas",
         endpoint_situacoes="situacoes_vendas",
-        origem="venda",
-        data_inicio=data_inicio,
+        origem="venda_produto",
+        params_extras={"tipo": "produto"},
         max_paginas=max_paginas,
     )
 
-    if incluir_orcamentos:
+    if incluir_ordens_servico:
         pedidos.extend(
             _buscar_pedidos_endpoint(
-                endpoint="orcamentos",
-                endpoint_situacoes="situacoes_orcamentos",
-                origem="orcamento",
-                data_inicio=data_inicio,
+                endpoint="ordens_servicos",
+                endpoint_situacoes="situacoes_ordens_servicos",
+                origem="ordem_servico",
+                params_extras=None,
                 max_paginas=max_paginas,
             )
         )
@@ -341,7 +371,7 @@ def listar_pedidos_gestaoclick(
 
 def listar_vendas_por_situacoes(situacoes: tuple[str, ...] = ("em andamento", "pronta entrega")) -> list[dict[str, str]]:
     desejadas = {_normalize_text(situacao) for situacao in situacoes}
-    pedidos = listar_pedidos_gestaoclick(incluir_orcamentos=False)
+    pedidos = listar_pedidos_gestaoclick(incluir_ordens_servico=False)
     return [pedido for pedido in pedidos if _normalize_text(pedido.get("situacao")) in desejadas]
 
 
