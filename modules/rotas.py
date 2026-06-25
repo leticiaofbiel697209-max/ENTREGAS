@@ -48,7 +48,9 @@ def _dados_vazios() -> dict[str, str]:
 def _filtrar_por_data(tabela: pd.DataFrame, data_inicio: date) -> pd.DataFrame:
     if "data" not in tabela.columns or tabela.empty:
         return tabela
-    datas = pd.to_datetime(tabela["data"], errors="coerce", dayfirst=True).dt.date
+    datas_iso = pd.to_datetime(tabela["data"], errors="coerce", format="%Y-%m-%d").dt.date
+    datas_br = pd.to_datetime(tabela["data"], errors="coerce", dayfirst=True).dt.date
+    datas = datas_iso.fillna(datas_br)
     return tabela[datas.isna() | (datas >= data_inicio)]
 
 
@@ -161,10 +163,16 @@ def render() -> None:
     st.caption("Busca Vendas > Produtos e, se marcado, Ordens de servico. Use os filtros para escolher o que entra na rota.")
     try:
         config_gc = gestaoclick_api.status_configuracao()
+        try:
+            loja = gestaoclick_api.obter_loja_alvo()
+            loja_texto = f" | Loja {loja['nome']} ({loja['id']})"
+        except Exception as exc:
+            loja_texto = f" | Loja NOVAPRINT nao localizada: {exc}"
         st.caption(
             f"Integracao: URL {config_gc['url']} | Token "
             f"{'configurado' if config_gc['token_configurado'] else 'nao configurado'} | Secret token "
             f"{'configurado' if config_gc['secret_token_configurado'] else 'nao configurado'}"
+            f"{loja_texto}"
         )
     except Exception:
         st.caption("Integracao: configuracao do GestaoClick nao localizada.")
@@ -178,6 +186,7 @@ def render() -> None:
     if col_buscar.button("Buscar pedidos disponiveis"):
         try:
             st.session_state["vendas_disponiveis_gc"] = gestaoclick_api.listar_pedidos_gestaoclick(
+                data_inicio=data_inicio_gc,
                 incluir_ordens_servico=incluir_os,
                 max_paginas=int(max_paginas),
             )
@@ -205,17 +214,8 @@ def render() -> None:
             if valor.strip().lower() in (
                 "em andamento",
                 "pronta entrega",
-                "andamento",
-                "em aberto",
-                "a caminho do cliente",
-                "locacao - entrega de equipamento",
-                "locação - entrega de equipamento",
-                "locacao - retirada de equipamento",
-                "locação - retirada de equipamento",
             )
         ]
-        if not default_situacoes:
-            default_situacoes = situacoes_disponiveis
 
         filtro_col1, filtro_col2, filtro_col3 = st.columns([3, 2, 2])
         situacoes_filtradas = filtro_col1.multiselect(
@@ -286,6 +286,17 @@ def render() -> None:
                 total = 0
                 sem_endereco = 0
                 for venda in selecionadas:
+                    try:
+                        venda_detalhada = gestaoclick_api.buscar_pedido_detalhado(
+                            str(venda.get("origem", "")),
+                            str(venda.get("venda_id", "")),
+                        )
+                        venda = {**venda, **venda_detalhada}
+                    except Exception as exc:
+                        venda["observacao"] = (
+                            f"{venda.get('observacao', '')} | Falha ao buscar detalhes/endereco: {exc}"
+                        ).strip()
+
                     if not str(venda.get("cliente", "")).strip():
                         venda["cliente"] = "Cliente nao informado"
                     if not str(venda.get("endereco", "")).strip():
