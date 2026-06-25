@@ -56,6 +56,10 @@ def _form_entregue(entrega: dict) -> None:
         elif origem_pedido == "ordem_servico":
             api_retorno = {"info": "Origem ordem_servico: status atualizado apenas no controle de entregas."}
 
+        if api_retorno.get("erro"):
+            st.error(f"GestaoClick nao atualizou a venda: {api_retorno['erro']}")
+            return
+
         registrar_entrega_concluida(
             entrega["id"],
             recebido_por,
@@ -63,8 +67,11 @@ def _form_entregue(entrega: dict) -> None:
             st.session_state.get("usuario", ""),
             json.dumps(api_retorno, ensure_ascii=False),
         )
-        if api_retorno.get("erro"):
-            st.warning("Entrega salva, mas o GestaoClick retornou erro. Veja o historico da API no banco.")
+        if api_retorno.get("erro_recebedor"):
+            st.warning(
+                "Entrega concluida e situacao atualizada, mas o campo RECEBEDOR nao foi aceito pela API. "
+                "O detalhe ficou salvo no historico."
+            )
         else:
             st.success("Entrega concluida e GestaoClick atualizado.")
         st.rerun()

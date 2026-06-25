@@ -45,6 +45,40 @@ def _dados_vazios() -> dict[str, str]:
     }
 
 
+def _aplicar_endereco(dados: dict, endereco: dict) -> dict:
+    atualizados = dict(dados)
+    atualizados["endereco"] = endereco.get("endereco", atualizados.get("endereco", ""))
+    atualizados["cidade"] = endereco.get("cidade", atualizados.get("cidade", ""))
+    atualizados["estado"] = endereco.get("estado", atualizados.get("estado", ""))
+    atualizados["cep"] = endereco.get("cep", atualizados.get("cep", ""))
+    return atualizados
+
+
+def _selecionar_endereco(dados: dict, chave: str) -> dict:
+    opcoes = dados.get("opcoes_endereco") or []
+    if not opcoes:
+        return dados
+
+    labels = []
+    for idx, endereco in enumerate(opcoes, start=1):
+        label = endereco.get("label") or f"Endereco {idx}"
+        resumo = " - ".join(
+            item
+            for item in (
+                endereco.get("endereco", ""),
+                endereco.get("cidade", ""),
+                endereco.get("estado", ""),
+                endereco.get("cep", ""),
+            )
+            if item
+        )
+        labels.append(f"{label}: {resumo}" if resumo else label)
+
+    escolha = st.selectbox("Endereco para entrega", labels, key=f"endereco_opcao_{chave}")
+    endereco = opcoes[labels.index(escolha)]
+    return _aplicar_endereco(dados, endereco)
+
+
 def _filtrar_por_data(tabela: pd.DataFrame, data_inicio: date) -> pd.DataFrame:
     if "data" not in tabela.columns or tabela.empty:
         return tabela
@@ -121,7 +155,7 @@ def render() -> None:
 
     origem = st.radio(
         "Origem do endereco",
-        ["Digitar manualmente", "Buscar endereco da venda", "Buscar endereco do cliente"],
+        ["Buscar endereco da venda", "Buscar endereco do cliente", "Digitar manualmente"],
         horizontal=True,
     )
 
@@ -129,10 +163,10 @@ def render() -> None:
     prefixo = "manual"
 
     if origem == "Buscar endereco da venda":
-        venda_id = st.text_input("Informe o ID da venda no GestaoClick")
+        venda_id = st.text_input("Informe o ID ou numero da venda no GestaoClick")
         if st.button("Buscar venda"):
             if not venda_id.strip():
-                st.error("Informe o ID da venda.")
+                st.error("Informe o ID ou numero da venda.")
             else:
                 try:
                     st.session_state["dados_venda_gc"] = gestaoclick_api.buscar_endereco_venda(venda_id.strip())
@@ -140,13 +174,14 @@ def render() -> None:
                 except Exception as exc:
                     st.error(f"Nao foi possivel buscar a venda: {exc}")
         dados.update(st.session_state.get("dados_venda_gc", {}))
+        dados = _selecionar_endereco(dados, "venda")
         prefixo = "venda"
 
     elif origem == "Buscar endereco do cliente":
-        cliente_id = st.text_input("Informe o ID do cliente no GestaoClick")
+        cliente_id = st.text_input("Informe ID, nome, CPF/CNPJ, telefone ou e-mail do cliente")
         if st.button("Buscar cliente"):
             if not cliente_id.strip():
-                st.error("Informe o ID do cliente.")
+                st.error("Informe uma informacao do cliente.")
             else:
                 try:
                     st.session_state["dados_cliente_gc"] = gestaoclick_api.buscar_endereco_cliente(cliente_id.strip())
@@ -154,6 +189,7 @@ def render() -> None:
                 except Exception as exc:
                     st.error(f"Nao foi possivel buscar o cliente: {exc}")
         dados.update(st.session_state.get("dados_cliente_gc", {}))
+        dados = _selecionar_endereco(dados, "cliente")
         prefixo = "cliente"
 
     _form_entrega(rota_id, dados, prefixo)
