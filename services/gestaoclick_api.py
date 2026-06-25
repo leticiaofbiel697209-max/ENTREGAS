@@ -17,24 +17,46 @@ class GestaoClickAPIError(RuntimeError):
 
 def get_config(name: str, default: str = "") -> str:
     """Le configuracoes do .env, variaveis do ambiente ou Secrets do Streamlit Cloud."""
-    value = os.getenv(name)
+    candidates = (name, name.lower())
+
+    value = os.getenv(name) or os.getenv(name.lower())
     if value not in (None, ""):
         return str(value)
 
     try:
         import streamlit as st
 
-        secret_value = st.secrets.get(name, default)
-        return str(secret_value) if secret_value not in (None, "") else default
+        for candidate in candidates:
+            secret_value = st.secrets.get(candidate)
+            if secret_value not in (None, ""):
+                return str(secret_value)
+
+        # Tambem aceita Secrets agrupados como [gestaoclick].
+        for group_name in ("gestaoclick", "GESTAOCLICK"):
+            group = st.secrets.get(group_name, {})
+            if hasattr(group, "get"):
+                for candidate in candidates:
+                    grouped_value = group.get(candidate)
+                    if grouped_value not in (None, ""):
+                        return str(grouped_value)
+        return default
     except Exception:
         return default
 
 
 def _base_url() -> str:
-    url = get_config("GESTAOCLICK_URL", "").strip().rstrip("/")
+    url = get_config("GESTAOCLICK_URL", "https://api.gestaoclick.com").strip().rstrip("/")
     if not url:
         raise GestaoClickAPIError("GESTAOCLICK_URL nao configurado.")
     return url
+
+
+def status_configuracao() -> dict[str, str | bool]:
+    token = get_config("GESTAOCLICK_TOKEN", "").strip()
+    return {
+        "url": _base_url(),
+        "token_configurado": bool(token),
+    }
 
 
 def _headers() -> dict[str, str]:
