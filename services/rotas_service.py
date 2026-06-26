@@ -190,6 +190,25 @@ def obter_entrega(entrega_id: int) -> dict[str, Any] | None:
     return dict(row) if row else None
 
 
+def atualizar_endereco_entrega(
+    entrega_id: int,
+    endereco: str,
+    cidade: str,
+    estado: str,
+    cep: str,
+) -> None:
+    with get_connection() as conn:
+        conn.execute(
+            """
+            UPDATE entregas
+            SET endereco = ?, cidade = ?, estado = ?, cep = ?
+            WHERE id = ?
+            """,
+            (endereco.strip(), cidade.strip(), estado.strip(), cep.strip(), entrega_id),
+        )
+        conn.commit()
+
+
 def registrar_entrega_concluida(
     entrega_id: int,
     recebido_por: str,

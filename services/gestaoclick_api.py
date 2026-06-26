@@ -742,6 +742,62 @@ def _normalizar_pagamentos_para_put(venda: dict[str, Any]) -> list[dict[str, Any
     return pagamentos
 
 
+def _remover_atributo_existente(items: Any, atributo_id: str) -> list[dict[str, Any]]:
+    if not isinstance(items, list):
+        return []
+    filtrados = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        item_id = str(
+            item.get("atributo_id")
+            or item.get("id")
+            or item.get("campo_id")
+            or item.get("atributo_venda_id")
+            or ""
+        )
+        nested = item.get("atributo") if isinstance(item.get("atributo"), dict) else {}
+        nested_id = str(nested.get("atributo_id") or nested.get("id") or "")
+        if item_id != atributo_id and nested_id != atributo_id:
+            filtrados.append(item)
+    return filtrados
+
+
+def _aplicar_recebedor_payload(payload: dict[str, Any], venda: dict[str, Any], atributo_id: str, recebido_por: str) -> None:
+    simples = {"atributo_id": atributo_id, "valor": recebido_por}
+    com_id = {"id": atributo_id, "atributo_id": atributo_id, "nome": "RECEBEDOR", "valor": recebido_por}
+    wrapper = {"atributo": {"id": atributo_id, "atributo_id": atributo_id, "nome": "RECEBEDOR", "valor": recebido_por}}
+    campo = {"campo_id": atributo_id, "atributo_id": atributo_id, "nome": "RECEBEDOR", "valor": recebido_por}
+
+    base_atributos = _remover_atributo_existente(venda.get("atributos"), atributo_id)
+    base_valores = _remover_atributo_existente(venda.get("valores_atributos"), atributo_id)
+    base_campos = _remover_atributo_existente(venda.get("campos_extras"), atributo_id)
+
+    payload["atributos"] = base_atributos + [com_id, wrapper]
+    payload["valores_atributos"] = base_valores + [simples, wrapper]
+    payload["campos_extras"] = base_campos + [campo]
+    payload["atributos_vendas"] = [simples]
+    payload["campo_extra"] = {"RECEBEDOR": recebido_por, atributo_id: recebido_por}
+    payload["campos_extra"] = {"RECEBEDOR": recebido_por, atributo_id: recebido_por}
+    payload["recebedor"] = recebido_por
+    payload["RECEBEDOR"] = recebido_por
+
+
+def _venda_tem_recebedor(venda: Any, recebido_por: str) -> bool:
+    alvo = _normalize_text(recebido_por)
+    if not alvo:
+        return True
+    if isinstance(venda, dict):
+        for key, value in venda.items():
+            if _normalize_text(key) == "recebedor" and _normalize_text(value) == alvo:
+                return True
+            if _venda_tem_recebedor(value, recebido_por):
+                return True
+    if isinstance(venda, list):
+        return any(_venda_tem_recebedor(item, recebido_por) for item in venda)
+    return _normalize_text(venda) == alvo
+
+
 def _montar_payload_venda(
     venda: dict[str, Any],
     situacao_id: str,
@@ -750,17 +806,6 @@ def _montar_payload_venda(
     loja_id: str = "",
 ) -> dict[str, Any]:
     atributo_recebedor_id = _buscar_atributo_venda_id("RECEBEDOR") if incluir_recebedor else ""
-    atributos = venda.get("atributos") or venda.get("valores_atributos") or []
-    if incluir_recebedor and atributo_recebedor_id and recebido_por:
-        atributos = [item for item in atributos if str(item.get("atributo_id") or item.get("id")) != atributo_recebedor_id]
-        atributos.append(
-            {
-                "id": atributo_recebedor_id,
-                "atributo_id": atributo_recebedor_id,
-                "nome": "RECEBEDOR",
-                "valor": recebido_por,
-            }
-        )
 
     payload = {
         "tipo": _clean_value(venda.get("tipo"), "produto"),
@@ -780,9 +825,8 @@ def _montar_payload_venda(
         "pagamentos": _normalizar_pagamentos_para_put(venda),
     }
 
-    if incluir_recebedor and atributos:
-        payload["atributos"] = atributos
-        payload["valores_atributos"] = atributos
+    if incluir_recebedor and atributo_recebedor_id and recebido_por:
+        _aplicar_recebedor_payload(payload, venda, atributo_recebedor_id, recebido_por)
 
     return {key: value for key, value in payload.items() if value not in (None, "")}
 
@@ -949,6 +993,18 @@ def atualizar_status_venda(
         if last_error:
             raise last_error
         raise GestaoClickAPIError("Nao foi possivel atualizar a venda.")
+
+    if recebido_por and recebedor_enviado:
+        try:
+            venda_atualizada = buscar_venda(venda_id)
+            if not _venda_tem_recebedor(venda_atualizada, recebido_por):
+                recebedor_enviado = False
+                erro_recebedor = (
+                    "GestaoClick aceitou a atualizacao, mas o campo RECEBEDOR nao apareceu "
+                    "na venda ao consultar novamente."
+                )
+        except Exception as exc:
+            erro_recebedor = f"Nao foi possivel confirmar o campo RECEBEDOR apos atualizar: {exc}"
 
     return {
         "status_atualizado": True,
