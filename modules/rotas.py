@@ -1,3 +1,4 @@
+import hashlib
 from datetime import date
 
 import pandas as pd
@@ -79,6 +80,16 @@ def _selecionar_endereco(dados: dict, chave: str) -> dict:
     return _aplicar_endereco(dados, endereco)
 
 
+def _assinatura_dados(dados: dict) -> str:
+    partes = [
+        str(dados.get("venda_id", "")),
+        str(dados.get("numero_venda", "")),
+        str(dados.get("endereco", "")),
+        str(dados.get("cep", "")),
+    ]
+    return hashlib.md5("|".join(partes).encode("utf-8")).hexdigest()[:8]
+
+
 def _filtrar_por_data(tabela: pd.DataFrame, data_inicio: date) -> pd.DataFrame:
     if "data" not in tabela.columns or tabela.empty:
         return tabela
@@ -89,18 +100,27 @@ def _filtrar_por_data(tabela: pd.DataFrame, data_inicio: date) -> pd.DataFrame:
 
 
 def _form_entrega(rota_id: int, dados: dict[str, str], prefixo: str) -> None:
+    assinatura = _assinatura_dados(dados)
     with st.form(f"form_entrega_{prefixo}"):
         col1, col2 = st.columns(2)
-        venda_id = col1.text_input("ID da venda", value=dados.get("venda_id", ""))
-        numero_venda = col2.text_input("Numero da venda", value=dados.get("numero_venda", ""))
-        cliente = st.text_input("Cliente", value=dados.get("cliente", ""))
-        telefone = st.text_input("Telefone", value=dados.get("telefone", ""))
-        endereco = st.text_area("Endereco", value=dados.get("endereco", ""))
+        venda_id = col1.text_input("ID da venda", value=dados.get("venda_id", ""), key=f"{prefixo}_{assinatura}_venda_id")
+        numero_venda = col2.text_input(
+            "Numero da venda",
+            value=dados.get("numero_venda", ""),
+            key=f"{prefixo}_{assinatura}_numero_venda",
+        )
+        cliente = st.text_input("Cliente", value=dados.get("cliente", ""), key=f"{prefixo}_{assinatura}_cliente")
+        telefone = st.text_input("Telefone", value=dados.get("telefone", ""), key=f"{prefixo}_{assinatura}_telefone")
+        endereco = st.text_area("Endereco", value=dados.get("endereco", ""), key=f"{prefixo}_{assinatura}_endereco")
         col3, col4, col5 = st.columns([2, 1, 1])
-        cidade = col3.text_input("Cidade", value=dados.get("cidade", ""))
-        estado = col4.text_input("Estado", value=dados.get("estado", ""))
-        cep = col5.text_input("CEP", value=dados.get("cep", ""))
-        observacao = st.text_area("Observacao", value=dados.get("observacao", ""))
+        cidade = col3.text_input("Cidade", value=dados.get("cidade", ""), key=f"{prefixo}_{assinatura}_cidade")
+        estado = col4.text_input("Estado", value=dados.get("estado", ""), key=f"{prefixo}_{assinatura}_estado")
+        cep = col5.text_input("CEP", value=dados.get("cep", ""), key=f"{prefixo}_{assinatura}_cep")
+        observacao = st.text_area(
+            "Observacao",
+            value=dados.get("observacao", ""),
+            key=f"{prefixo}_{assinatura}_observacao",
+        )
         salvar = st.form_submit_button("Adicionar entrega")
 
     if salvar:
