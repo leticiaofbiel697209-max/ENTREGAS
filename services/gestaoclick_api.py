@@ -625,6 +625,33 @@ def buscar_venda_por_numero(numero_venda: str) -> dict[str, Any]:
     raise GestaoClickAPIError(f"Venda numero {numero_venda} nao encontrada na loja NOVAPRINT.")
 
 
+def _descobrir_loja_venda(venda: dict[str, Any]) -> str:
+    loja_id = _field_id(venda, ("loja_id", "id_loja", "loja"))
+    if loja_id:
+        return loja_id
+
+    codigo = str(_first_value(venda, ("codigo", "numero", "numero_venda", "id")) or "")
+    venda_id = str(_first_value(venda, ("id", "venda_id")) or "")
+    if not codigo:
+        return ""
+
+    try:
+        candidatos = _listar_registros(
+            "vendas",
+            params={"codigo": codigo, "tipo": _clean_value(venda.get("tipo"), "produto")},
+            max_paginas=3,
+        )
+    except Exception:
+        return ""
+
+    for candidato in candidatos:
+        candidato_id = str(_first_value(candidato, ("id", "venda_id")) or "")
+        candidato_codigo = str(_first_value(candidato, ("codigo", "numero", "numero_venda")) or "")
+        if (venda_id and candidato_id == venda_id) or candidato_codigo == codigo:
+            return _field_id(candidato, ("loja_id", "id_loja", "loja"))
+    return ""
+
+
 def _buscar_situacao_id_venda(nome: str) -> str:
     alvo = _normalize_text(nome)
     for situacao in listar_situacoes_vendas():
@@ -699,6 +726,7 @@ def _montar_payload_venda(
         "tipo": _clean_value(venda.get("tipo"), "produto"),
         "codigo": _clean_value(venda.get("codigo") or venda.get("numero_venda") or venda.get("id")),
         "cliente_id": _clean_value(venda.get("cliente_id")),
+        "loja_id": _descobrir_loja_venda(venda),
         "vendedor_id": _clean_value(venda.get("vendedor_id")),
         "data": _clean_value(venda.get("data"), date.today().isoformat()),
         "situacao_id": situacao_id or _clean_value(venda.get("situacao_id")),
