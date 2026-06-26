@@ -7,6 +7,7 @@ import streamlit as st
 from services import gestaoclick_api
 from services.rotas_service import (
     adicionar_entrega,
+    atualizar_endereco_entrega,
     criar_rota,
     listar_entregadores,
     listar_entregas_rota,
@@ -97,6 +98,66 @@ def _filtrar_por_data(tabela: pd.DataFrame, data_inicio: date) -> pd.DataFrame:
     datas_br = pd.to_datetime(tabela["data"], errors="coerce", dayfirst=True).dt.date
     datas = datas_iso.fillna(datas_br)
     return tabela[datas.isna() | (datas >= data_inicio)]
+
+
+def _render_editor_endereco_rota(entregas: list[dict]) -> None:
+    st.markdown("#### Ajustar endereco da entrega")
+
+    opcoes = {
+        f"#{item['id']} - {item.get('numero_venda') or item.get('venda_id') or '-'} - {item['cliente']}": item
+        for item in entregas
+    }
+    escolha = st.selectbox("Entrega da rota", list(opcoes.keys()), key="editar_endereco_entrega_rota")
+    entrega = opcoes[escolha]
+
+    dados = {
+        "endereco": entrega.get("endereco", ""),
+        "cidade": entrega.get("cidade", ""),
+        "estado": entrega.get("estado", ""),
+        "cep": entrega.get("cep", ""),
+    }
+
+    opcoes_endereco = []
+    origem_pedido = str(entrega.get("origem_pedido") or "").lower()
+    if entrega.get("venda_id") and origem_pedido != "ordem_servico":
+        try:
+            opcoes_endereco = gestaoclick_api.listar_enderecos_venda(str(entrega["venda_id"]))
+        except Exception as exc:
+            st.caption(f"Nao foi possivel buscar enderecos no GestaoClick: {exc}")
+
+    if opcoes_endereco:
+        labels = []
+        for idx, endereco in enumerate(opcoes_endereco, start=1):
+            label = endereco.get("label") or f"Endereco {idx}"
+            resumo = " - ".join(
+                item
+                for item in (
+                    endereco.get("endereco", ""),
+                    endereco.get("cidade", ""),
+                    endereco.get("estado", ""),
+                    endereco.get("cep", ""),
+                )
+                if item
+            )
+            labels.append(f"{label}: {resumo}" if resumo else label)
+        selecionado = st.selectbox("Endereco do GestaoClick", labels, key=f"endereco_rota_gc_{entrega['id']}")
+        dados = _aplicar_endereco(dados, opcoes_endereco[labels.index(selecionado)])
+
+    with st.form(f"form_editar_endereco_rota_{entrega['id']}_{_assinatura_dados(dados)}"):
+        endereco = st.text_area("Endereco", value=dados.get("endereco", ""))
+        col1, col2, col3 = st.columns([2, 1, 1])
+        cidade = col1.text_input("Cidade", value=dados.get("cidade", ""))
+        estado = col2.text_input("Estado", value=dados.get("estado", ""))
+        cep = col3.text_input("CEP", value=dados.get("cep", ""))
+        salvar = st.form_submit_button("Salvar endereco nesta entrega")
+
+    if salvar:
+        if not endereco.strip():
+            st.error("Informe o endereco.")
+            return
+        atualizar_endereco_entrega(int(entrega["id"]), endereco, cidade, estado, cep)
+        st.success("Endereco da entrega atualizado.")
+        st.rerun()
 
 
 def _form_entrega(rota_id: int, dados: dict[str, str], prefixo: str) -> None:
@@ -381,4 +442,5 @@ def render() -> None:
     if not entregas:
         st.info("Esta rota ainda nao tem entregas.")
         return
+    _render_editor_endereco_rota(entregas)
     st.dataframe(entregas, use_container_width=True, hide_index=True)
