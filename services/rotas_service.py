@@ -121,9 +121,9 @@ def adicionar_entrega(rota_id: int, dados: dict[str, Any]) -> int:
             """
             INSERT INTO entregas (
                 rota_id, venda_id, numero_venda, cliente, telefone, endereco,
-                cidade, estado, cep, status, observacao
+                cidade, estado, cep, status, observacao, origem_pedido, loja_id
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 rota_id,
@@ -137,6 +137,8 @@ def adicionar_entrega(rota_id: int, dados: dict[str, Any]) -> int:
                 dados.get("cep", "").strip(),
                 STATUS_EM_ROTA,
                 dados.get("observacao", "").strip(),
+                dados.get("origem", dados.get("origem_pedido", "")).strip(),
+                dados.get("loja_id", "").strip(),
             ),
         )
         conn.commit()

@@ -625,31 +625,70 @@ def buscar_venda_por_numero(numero_venda: str) -> dict[str, Any]:
     raise GestaoClickAPIError(f"Venda numero {numero_venda} nao encontrada na loja NOVAPRINT.")
 
 
-def _descobrir_loja_venda(venda: dict[str, Any]) -> str:
+def _lojas_possiveis_venda(venda: dict[str, Any], loja_id_preferida: str = "") -> list[str]:
+    possiveis: list[str] = []
+
+    def add(loja_id: Any) -> None:
+        loja_texto = str(loja_id or "").strip()
+        if loja_texto and loja_texto not in possiveis:
+            possiveis.append(loja_texto)
+
+    add(loja_id_preferida)
     loja_id = _field_id(venda, ("loja_id", "id_loja", "loja"))
-    if loja_id:
-        return loja_id
+    add(loja_id)
 
     codigo = str(_first_value(venda, ("codigo", "numero", "numero_venda", "id")) or "")
     venda_id = str(_first_value(venda, ("id", "venda_id")) or "")
     if not codigo:
-        return ""
+        return possiveis
+
+    lojas_para_testar: list[str] = []
+    try:
+        lojas_para_testar = [loja["id"] for loja in listar_lojas() if loja.get("id")]
+    except Exception:
+        lojas_para_testar = []
+
+    for loja_teste in lojas_para_testar:
+        try:
+            candidatos = _listar_registros(
+                "vendas",
+                params={
+                    "codigo": codigo,
+                    "tipo": _clean_value(venda.get("tipo"), "produto"),
+                    "loja_id": loja_teste,
+                },
+                max_paginas=1,
+            )
+        except Exception:
+            continue
+
+        for candidato in candidatos:
+            candidato_id = str(_first_value(candidato, ("id", "venda_id")) or "")
+            candidato_codigo = str(_first_value(candidato, ("codigo", "numero", "numero_venda")) or "")
+            if (venda_id and candidato_id == venda_id) or candidato_codigo == codigo:
+                add(_field_id(candidato, ("loja_id", "id_loja", "loja")) or loja_teste)
 
     try:
-        candidatos = _listar_registros(
+        candidatos_sem_loja = _listar_registros(
             "vendas",
             params={"codigo": codigo, "tipo": _clean_value(venda.get("tipo"), "produto")},
             max_paginas=3,
         )
     except Exception:
-        return ""
+        candidatos_sem_loja = []
 
-    for candidato in candidatos:
+    for candidato in candidatos_sem_loja:
         candidato_id = str(_first_value(candidato, ("id", "venda_id")) or "")
         candidato_codigo = str(_first_value(candidato, ("codigo", "numero", "numero_venda")) or "")
         if (venda_id and candidato_id == venda_id) or candidato_codigo == codigo:
-            return _field_id(candidato, ("loja_id", "id_loja", "loja"))
-    return ""
+            add(_field_id(candidato, ("loja_id", "id_loja", "loja")))
+
+    return possiveis
+
+
+def _descobrir_loja_venda(venda: dict[str, Any], loja_id_preferida: str = "") -> str:
+    lojas = _lojas_possiveis_venda(venda, loja_id_preferida)
+    return lojas[0] if lojas else ""
 
 
 def _buscar_situacao_id_venda(nome: str) -> str:
@@ -708,6 +747,7 @@ def _montar_payload_venda(
     situacao_id: str,
     recebido_por: str,
     incluir_recebedor: bool = True,
+    loja_id: str = "",
 ) -> dict[str, Any]:
     atributo_recebedor_id = _buscar_atributo_venda_id("RECEBEDOR") if incluir_recebedor else ""
     atributos = venda.get("atributos") or venda.get("valores_atributos") or []
@@ -726,7 +766,7 @@ def _montar_payload_venda(
         "tipo": _clean_value(venda.get("tipo"), "produto"),
         "codigo": _clean_value(venda.get("codigo") or venda.get("numero_venda") or venda.get("id")),
         "cliente_id": _clean_value(venda.get("cliente_id")),
-        "loja_id": _descobrir_loja_venda(venda),
+        "loja_id": loja_id or _descobrir_loja_venda(venda),
         "vendedor_id": _clean_value(venda.get("vendedor_id")),
         "data": _clean_value(venda.get("data"), date.today().isoformat()),
         "situacao_id": situacao_id or _clean_value(venda.get("situacao_id")),
@@ -835,13 +875,19 @@ def listar_enderecos_venda(venda_id: str) -> list[dict[str, str]]:
     return enderecos
 
 
-def atualizar_status_venda(venda_id: str, status: str, recebido_por: str = "") -> dict[str, Any]:
+def atualizar_status_venda(
+    venda_id: str,
+    status: str,
+    recebido_por: str = "",
+    loja_id: str = "",
+) -> dict[str, Any]:
     venda = buscar_venda(venda_id)
     situacao_id = _buscar_situacao_id_venda(status)
     if not situacao_id:
         raise GestaoClickAPIError(f"Situacao {status} nao encontrada nas situacoes de vendas.")
 
     resposta = None
+    payload_sucesso: dict[str, Any] = {}
     last_error: Exception | None = None
     recebedor_enviado = bool(recebido_por)
     erro_recebedor = ""
@@ -849,22 +895,46 @@ def atualizar_status_venda(venda_id: str, status: str, recebido_por: str = "") -
     # Tenta primeiro atualizar status e RECEBEDOR juntos. Se a API rejeitar
     # o formato do campo extra, tenta novamente somente com a situacao.
     tentativas: list[tuple[dict[str, Any], bool]] = []
-    try:
+    lojas_para_tentar = _lojas_possiveis_venda(venda, loja_id)
+    if not lojas_para_tentar:
+        lojas_para_tentar = [""]
+
+    for loja_tentativa in lojas_para_tentar:
+        try:
+            tentativas.append(
+                (
+                    _montar_payload_venda(
+                        venda,
+                        situacao_id,
+                        recebido_por,
+                        incluir_recebedor=True,
+                        loja_id=loja_tentativa,
+                    ),
+                    True,
+                )
+            )
+        except Exception as exc:
+            last_error = exc
+            recebedor_enviado = False
+            erro_recebedor = str(exc)
         tentativas.append(
-            (_montar_payload_venda(venda, situacao_id, recebido_por, incluir_recebedor=True), True)
+            (
+                _montar_payload_venda(
+                    venda,
+                    situacao_id,
+                    recebido_por,
+                    incluir_recebedor=False,
+                    loja_id=loja_tentativa,
+                ),
+                False,
+            )
         )
-    except Exception as exc:
-        last_error = exc
-        recebedor_enviado = False
-        erro_recebedor = str(exc)
-    tentativas.append(
-        (_montar_payload_venda(venda, situacao_id, recebido_por, incluir_recebedor=False), False)
-    )
 
     for payload, tentou_recebedor in tentativas:
         for candidate in _endpoint_candidates(f"vendas/{venda_id}"):
             try:
                 resposta = _request("PUT", candidate, json=payload)
+                payload_sucesso = payload
                 if not tentou_recebedor and recebido_por:
                     recebedor_enviado = False
                     if not erro_recebedor:
@@ -883,6 +953,7 @@ def atualizar_status_venda(venda_id: str, status: str, recebido_por: str = "") -
     return {
         "status_atualizado": True,
         "situacao_id_enviada": situacao_id,
+        "loja_id_enviada": payload_sucesso.get("loja_id", ""),
         "recebedor_enviado": recebedor_enviado,
         "erro_recebedor": erro_recebedor,
         "retorno": resposta,

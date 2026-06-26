@@ -69,6 +69,8 @@ def init_db() -> None:
                 data_entrega TEXT,
                 atualizado_por TEXT,
                 api_retorno TEXT,
+                origem_pedido TEXT,
+                loja_id TEXT,
                 criado_em TEXT DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY (rota_id) REFERENCES rotas(id) ON DELETE CASCADE
             );
@@ -90,6 +92,8 @@ def init_db() -> None:
         _add_column_if_missing(conn, "rotas", "entregador_id", "INTEGER")
         _add_column_if_missing(conn, "entregas", "atualizado_por", "TEXT")
         _add_column_if_missing(conn, "entregas", "api_retorno", "TEXT")
+        _add_column_if_missing(conn, "entregas", "origem_pedido", "TEXT")
+        _add_column_if_missing(conn, "entregas", "loja_id", "TEXT")
         _add_column_if_missing(conn, "ocorrencias", "usuario", "TEXT")
 
         _create_indexes(
