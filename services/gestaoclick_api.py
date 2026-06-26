@@ -930,87 +930,91 @@ def atualizar_status_venda(
     if not situacao_id:
         raise GestaoClickAPIError(f"Situacao {status} nao encontrada nas situacoes de vendas.")
 
-    resposta = None
-    payload_sucesso: dict[str, Any] = {}
     last_error: Exception | None = None
-    recebedor_enviado = bool(recebido_por)
+    resposta_status = None
+    payload_status: dict[str, Any] = {}
+    recebedor_enviado = False
     erro_recebedor = ""
-
-    # Tenta primeiro atualizar status e RECEBEDOR juntos. Se a API rejeitar
-    # o formato do campo extra, tenta novamente somente com a situacao.
-    tentativas: list[tuple[dict[str, Any], bool]] = []
     lojas_para_tentar = _lojas_possiveis_venda(venda, loja_id)
     if not lojas_para_tentar:
         lojas_para_tentar = [""]
 
-    for loja_tentativa in lojas_para_tentar:
-        try:
-            tentativas.append(
-                (
-                    _montar_payload_venda(
+    situacao_original_id = str(_clean_value(venda.get("situacao_id")) or "")
+
+    # O GestaoClick bloqueia algumas edicoes quando a venda ja esta ENTREGUE.
+    # Por isso o RECEBEDOR e gravado primeiro, mantendo a situacao original.
+    if recebido_por:
+        if situacao_original_id == situacao_id:
+            erro_recebedor = (
+                "A venda ja estava ENTREGUE antes do envio; o GestaoClick pode bloquear "
+                "alteracao de campos extras nessa situacao."
+            )
+        else:
+            for loja_tentativa in lojas_para_tentar:
+                try:
+                    payload_recebedor = _montar_payload_venda(
                         venda,
-                        situacao_id,
+                        situacao_original_id,
                         recebido_por,
                         incluir_recebedor=True,
                         loja_id=loja_tentativa,
-                    ),
-                    True,
-                )
-            )
-        except Exception as exc:
-            last_error = exc
-            recebedor_enviado = False
-            erro_recebedor = str(exc)
-        tentativas.append(
-            (
-                _montar_payload_venda(
-                    venda,
-                    situacao_id,
-                    recebido_por,
-                    incluir_recebedor=False,
-                    loja_id=loja_tentativa,
-                ),
-                False,
-            )
-        )
+                    )
+                except Exception as exc:
+                    last_error = exc
+                    erro_recebedor = str(exc)
+                    continue
 
-    for payload, tentou_recebedor in tentativas:
+                for candidate in _endpoint_candidates(f"vendas/{venda_id}"):
+                    try:
+                        _request("PUT", candidate, json=payload_recebedor)
+                        try:
+                            venda_com_recebedor = buscar_venda(venda_id)
+                            recebedor_enviado = _venda_tem_recebedor(venda_com_recebedor, recebido_por)
+                            if not recebedor_enviado:
+                                erro_recebedor = (
+                                    "GestaoClick aceitou a tentativa de preencher RECEBEDOR, "
+                                    "mas o valor nao apareceu na venda ao consultar novamente."
+                                )
+                        except Exception as exc:
+                            recebedor_enviado = True
+                            erro_recebedor = f"Nao foi possivel confirmar RECEBEDOR apos gravar: {exc}"
+                        break
+                    except Exception as exc:
+                        last_error = exc
+                if recebedor_enviado:
+                    break
+
+            if not recebedor_enviado and not erro_recebedor:
+                erro_recebedor = str(last_error or "Campo RECEBEDOR nao aceito pela API.")
+
+    for loja_tentativa in lojas_para_tentar:
+        payload = _montar_payload_venda(
+            venda,
+            situacao_id,
+            "",
+            incluir_recebedor=False,
+            loja_id=loja_tentativa,
+        )
         for candidate in _endpoint_candidates(f"vendas/{venda_id}"):
             try:
-                resposta = _request("PUT", candidate, json=payload)
-                payload_sucesso = payload
-                if not tentou_recebedor and recebido_por:
-                    recebedor_enviado = False
-                    if not erro_recebedor:
-                        erro_recebedor = str(last_error or "Campo RECEBEDOR nao aceito pela API neste formato.")
+                resposta_status = _request("PUT", candidate, json=payload)
+                payload_status = payload
                 break
             except Exception as exc:
                 last_error = exc
-        if resposta is not None:
+        if resposta_status is not None:
             break
 
-    if resposta is None:
+    if resposta_status is None:
         if last_error:
             raise last_error
         raise GestaoClickAPIError("Nao foi possivel atualizar a venda.")
 
-    if recebido_por and recebedor_enviado:
-        try:
-            venda_atualizada = buscar_venda(venda_id)
-            if not _venda_tem_recebedor(venda_atualizada, recebido_por):
-                recebedor_enviado = False
-                erro_recebedor = (
-                    "GestaoClick aceitou a atualizacao, mas o campo RECEBEDOR nao apareceu "
-                    "na venda ao consultar novamente."
-                )
-        except Exception as exc:
-            erro_recebedor = f"Nao foi possivel confirmar o campo RECEBEDOR apos atualizar: {exc}"
-
     return {
         "status_atualizado": True,
         "situacao_id_enviada": situacao_id,
-        "loja_id_enviada": payload_sucesso.get("loja_id", ""),
+        "loja_id_enviada": payload_status.get("loja_id", ""),
         "recebedor_enviado": recebedor_enviado,
         "erro_recebedor": erro_recebedor,
-        "retorno": resposta,
+        "retorno": resposta_status,
     }
