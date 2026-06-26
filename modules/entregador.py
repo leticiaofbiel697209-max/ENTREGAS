@@ -1,7 +1,5 @@
 import json
 
-import json
-
 import streamlit as st
 
 from services import gestaoclick_api
@@ -50,6 +48,7 @@ def _form_entregue(entrega: dict) -> None:
                     entrega["venda_id"],
                     "ENTREGUE",
                     recebido_por=recebido_por.strip(),
+                    loja_id=str(entrega.get("loja_id") or ""),
                 )
             except Exception as exc:
                 api_retorno = {"erro": str(exc)}

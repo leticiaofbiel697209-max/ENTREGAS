@@ -140,6 +140,7 @@ def _form_entrega(rota_id: int, dados: dict[str, str], prefixo: str) -> None:
                 "estado": estado,
                 "cep": cep,
                 "observacao": observacao,
+                "loja_id": str(dados.get("loja_id", "")),
             },
         )
         st.success("Entrega adicionada a rota.")
@@ -316,6 +317,7 @@ def render() -> None:
                 "cidade",
                 "estado",
                 "cep",
+                "loja_id",
                 "situacao",
             ]
             tabela = tabela[[coluna for coluna in colunas if coluna in tabela.columns]]
@@ -332,8 +334,13 @@ def render() -> None:
                     "origem": "Origem",
                     "data": "Data",
                     "valor_total": "Valor",
+                    "loja_id": "Loja",
                 },
-                disabled=[coluna for coluna in tabela.columns if coluna != "selecionar"],
+                disabled=[
+                    coluna
+                    for coluna in tabela.columns
+                    if coluna not in ("selecionar", "endereco", "cidade", "estado", "cep")
+                ],
                 key="editor_vendas_gc",
             )
 
@@ -342,12 +349,16 @@ def render() -> None:
                 total = 0
                 sem_endereco = 0
                 for venda in selecionadas:
+                    dados_editados = dict(venda)
                     try:
                         venda_detalhada = gestaoclick_api.buscar_pedido_detalhado(
                             str(venda.get("origem", "")),
                             str(venda.get("venda_id", "")),
                         )
                         venda = {**venda, **venda_detalhada}
+                        for campo in ("endereco", "cidade", "estado", "cep", "loja_id"):
+                            if str(dados_editados.get(campo, "")).strip():
+                                venda[campo] = dados_editados[campo]
                     except Exception as exc:
                         venda["observacao"] = (
                             f"{venda.get('observacao', '')} | Falha ao buscar detalhes/endereco: {exc}"
