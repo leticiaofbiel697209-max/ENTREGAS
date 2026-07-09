@@ -5,6 +5,7 @@ import streamlit as st
 from services import gestaoclick_api
 from services.rotas_service import (
     listar_entregadores,
+    listar_entregas_concluidas_entregador,
     listar_entregas_entregador,
     obter_entrega,
     registrar_entrega_concluida,
@@ -142,6 +143,27 @@ def _card_entrega(entrega: dict) -> None:
         _form_ocorrencia(entrega_atual)
 
 
+def _render_entregas_concluidas(entregador_id: int) -> None:
+    with st.expander("Entregas entregues / recebidas", expanded=True):
+        concluidas = listar_entregas_concluidas_entregador(entregador_id)
+        if not concluidas:
+            st.info("Nenhuma entrega concluida para este entregador.")
+            return
+
+        linhas = [
+            {
+                "Data": item.get("data_entrega") or "",
+                "Venda": item.get("numero_venda") or item.get("venda_id") or "",
+                "Cliente": item.get("cliente") or "",
+                "Recebido por": item.get("recebido_por") or "",
+                "Endereco": item.get("endereco") or "",
+                "Status": item.get("status") or "",
+            }
+            for item in concluidas
+        ]
+        st.dataframe(linhas, use_container_width=True, hide_index=True)
+
+
 def render() -> None:
     st.title("Painel do entregador")
 
@@ -153,10 +175,16 @@ def render() -> None:
     if not entregador_id:
         return
 
+    if st.button("Atualizar entregas"):
+        st.rerun()
+
+    _render_entregas_concluidas(int(entregador_id))
+
     entregas = listar_entregas_entregador(int(entregador_id))
     if not entregas:
         st.info("Nao ha entregas atribuidas para este entregador.")
         return
 
+    st.subheader("Entregas em rota")
     for entrega in entregas:
         _card_entrega(entrega)
