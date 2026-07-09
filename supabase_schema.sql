@@ -32,6 +32,7 @@ CREATE TABLE IF NOT EXISTS entregas (
     atualizado_por TEXT,
     api_retorno TEXT,
     origem_pedido TEXT,
+    loja_id TEXT,
     criado_em TIMESTAMPTZ DEFAULT NOW()
 );
 
@@ -42,6 +43,12 @@ CREATE TABLE IF NOT EXISTS ocorrencias (
     descricao TEXT,
     data_ocorrencia TIMESTAMPTZ DEFAULT NOW(),
     usuario TEXT
+);
+
+CREATE TABLE IF NOT EXISTS configuracoes (
+    chave TEXT PRIMARY KEY,
+    valor TEXT,
+    atualizado_em TIMESTAMPTZ DEFAULT NOW()
 );
 
 CREATE INDEX IF NOT EXISTS idx_entregas_status ON entregas(status);
