@@ -691,12 +691,36 @@ def _descobrir_loja_venda(venda: dict[str, Any], loja_id_preferida: str = "") ->
     return lojas[0] if lojas else ""
 
 
+def _situacao_venda_atual(venda: dict[str, Any]) -> tuple[str, str]:
+    situacao_id = str(_first_value(venda, ("situacao_id", "id_situacao", "status_id")) or "")
+    situacao_nome = _sale_status(venda)
+    return situacao_id, situacao_nome
+
+
 def _buscar_situacao_id_venda(nome: str) -> str:
-    alvo = _normalize_text(nome)
-    for situacao in listar_situacoes_vendas():
-        if _normalize_text(situacao.get("nome")) == alvo:
-            return situacao.get("id", "")
-    return ""
+    """Retorna somente a situacao explicitamente configurada para evitar chute perigoso."""
+    status_id_config = get_config(f"GESTAOCLICK_STATUS_{nome}_ID", "").strip()
+    if status_id_config:
+        return status_id_config
+
+    status_nome_config = get_config(f"GESTAOCLICK_STATUS_{nome}_NOME", "").strip()
+    situacoes = listar_situacoes_vendas()
+    if status_nome_config:
+        alvo = _normalize_text(status_nome_config)
+        for situacao in situacoes:
+            if _normalize_text(situacao.get("nome")) == alvo:
+                return situacao.get("id", "")
+        nomes = ", ".join(item.get("nome", "") for item in situacoes if item.get("nome"))
+        raise GestaoClickAPIError(
+            f"Situacao configurada para {nome} nao encontrada: {status_nome_config}. "
+            f"Situacoes disponiveis: {nomes}"
+        )
+
+    nomes = ", ".join(f"{item.get('id')} - {item.get('nome')}" for item in situacoes if item.get("id"))
+    raise GestaoClickAPIError(
+        f"Configure GESTAOCLICK_STATUS_{nome}_ID com o ID exato da situacao correta no GestaoClick. "
+        f"Nao vou alterar a venda por nome para evitar erro financeiro. Situacoes disponiveis: {nomes}"
+    )
 
 
 def _buscar_atributo_venda_id(nome: str) -> str:
@@ -928,7 +952,14 @@ def atualizar_status_venda(
     venda = buscar_venda(venda_id)
     situacao_id = _buscar_situacao_id_venda(status)
     if not situacao_id:
-        raise GestaoClickAPIError(f"Situacao {status} nao encontrada nas situacoes de vendas.")
+        raise GestaoClickAPIError(f"Situacao {status} nao configurada nas situacoes de vendas.")
+
+    situacao_original_id, situacao_original_nome = _situacao_venda_atual(venda)
+    if situacao_original_id == situacao_id:
+        raise GestaoClickAPIError(
+            f"A venda ja esta na situacao configurada para {status} "
+            f"({situacao_id} - {situacao_original_nome}). Confira no GestaoClick antes de confirmar novamente."
+        )
 
     last_error: Exception | None = None
     resposta_status = None
@@ -938,8 +969,6 @@ def atualizar_status_venda(
     lojas_para_tentar = _lojas_possiveis_venda(venda, loja_id)
     if not lojas_para_tentar:
         lojas_para_tentar = [""]
-
-    situacao_original_id = str(_clean_value(venda.get("situacao_id")) or "")
 
     # O GestaoClick bloqueia algumas edicoes quando a venda ja esta ENTREGUE.
     # Por isso o RECEBEDOR e gravado primeiro, mantendo a situacao original.
@@ -1010,9 +1039,20 @@ def atualizar_status_venda(
             raise last_error
         raise GestaoClickAPIError("Nao foi possivel atualizar a venda.")
 
+    venda_confirmada = buscar_venda(venda_id)
+    situacao_confirmada_id, situacao_confirmada_nome = _situacao_venda_atual(venda_confirmada)
+    if str(situacao_confirmada_id) != str(situacao_id):
+        raise GestaoClickAPIError(
+            "GestaoClick recebeu a atualizacao, mas a venda nao ficou na situacao configurada. "
+            f"Esperado ID {situacao_id}; atual ID {situacao_confirmada_id} - {situacao_confirmada_nome}. "
+            "A entrega nao sera marcada como entregue localmente."
+        )
+
     return {
         "status_atualizado": True,
         "situacao_id_enviada": situacao_id,
+        "situacao_confirmada_id": situacao_confirmada_id,
+        "situacao_confirmada_nome": situacao_confirmada_nome,
         "loja_id_enviada": payload_status.get("loja_id", ""),
         "recebedor_enviado": recebedor_enviado,
         "erro_recebedor": erro_recebedor,
