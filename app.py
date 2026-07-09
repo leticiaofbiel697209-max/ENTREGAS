@@ -57,7 +57,43 @@ def aplicar_estilos() -> None:
 def logout() -> None:
     for key in ["logado", "perfil", "usuario", "entregador_id", "entregador_nome"]:
         st.session_state.pop(key, None)
+    st.query_params.clear()
     st.rerun()
+
+
+def _limpar_login_url() -> None:
+    for key in ["perfil", "usuario", "entregador_id", "entregador_nome", "lembrar"]:
+        if key in st.query_params:
+            del st.query_params[key]
+
+
+def _salvar_login_url() -> None:
+    st.query_params["lembrar"] = "1"
+    st.query_params["perfil"] = st.session_state.get("perfil", "")
+    st.query_params["usuario"] = st.session_state.get("usuario", "")
+    if st.session_state.get("entregador_id"):
+        st.query_params["entregador_id"] = str(st.session_state.get("entregador_id"))
+        st.query_params["entregador_nome"] = st.session_state.get("entregador_nome", "")
+
+
+def _restaurar_login_url() -> None:
+    if st.session_state.get("logado") or st.query_params.get("lembrar") != "1":
+        return
+
+    perfil = st.query_params.get("perfil", "")
+    usuario = st.query_params.get("usuario", "")
+    if perfil not in ("ADMIN", "ENTREGADOR") or not usuario:
+        return
+
+    st.session_state["logado"] = True
+    st.session_state["perfil"] = perfil
+    st.session_state["usuario"] = usuario
+    if perfil == "ENTREGADOR":
+        try:
+            st.session_state["entregador_id"] = int(st.query_params.get("entregador_id", "0"))
+        except ValueError:
+            st.session_state["entregador_id"] = 0
+        st.session_state["entregador_nome"] = st.query_params.get("entregador_nome", usuario)
 
 
 def tela_login() -> None:
@@ -70,6 +106,7 @@ def tela_login() -> None:
         with st.form("login_admin"):
             usuario = st.text_input("Usuario")
             senha = st.text_input("Senha", type="password")
+            lembrar = st.checkbox("Manter login salvo neste navegador", value=True)
             entrar = st.form_submit_button("Entrar como ADMIN")
 
         if entrar:
@@ -77,6 +114,10 @@ def tela_login() -> None:
                 st.session_state["logado"] = True
                 st.session_state["perfil"] = "ADMIN"
                 st.session_state["usuario"] = usuario.strip()
+                if lembrar:
+                    _salvar_login_url()
+                else:
+                    _limpar_login_url()
                 st.rerun()
             st.error("Usuario ou senha invalidos.")
 
@@ -84,6 +125,7 @@ def tela_login() -> None:
         with st.form("login_entregador"):
             nome = st.text_input("Nome do entregador")
             codigo = st.text_input("Codigo de acesso", type="password")
+            lembrar = st.checkbox("Manter login salvo neste navegador", value=True, key="lembrar_entregador")
             entrar = st.form_submit_button("Entrar como ENTREGADOR")
 
         if entrar:
@@ -94,6 +136,10 @@ def tela_login() -> None:
                 st.session_state["usuario"] = dados["nome"]
                 st.session_state["entregador_id"] = dados["id"]
                 st.session_state["entregador_nome"] = dados["nome"]
+                if lembrar:
+                    _salvar_login_url()
+                else:
+                    _limpar_login_url()
                 st.rerun()
             st.error("Entregador nao encontrado ou codigo invalido.")
 
@@ -136,6 +182,7 @@ def menu_entregador() -> None:
 
 def main() -> None:
     aplicar_estilos()
+    _restaurar_login_url()
     if not st.session_state.get("logado"):
         tela_login()
         return
