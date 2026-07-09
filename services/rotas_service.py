@@ -176,6 +176,23 @@ def listar_entregas_entregador(entregador_id: int) -> list[dict[str, Any]]:
     return [dict(row) for row in rows]
 
 
+def listar_entregas_concluidas_entregador(entregador_id: int, limite: int = 20) -> list[dict[str, Any]]:
+    with get_connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT e.*, r.entregador, r.entregador_id, r.data_rota, r.veiculo
+            FROM entregas e
+            JOIN rotas r ON r.id = e.rota_id
+            WHERE r.entregador_id = ?
+              AND e.status = ?
+            ORDER BY e.data_entrega DESC, e.id DESC
+            LIMIT ?
+            """,
+            (entregador_id, STATUS_ENTREGUE, limite),
+        ).fetchall()
+    return [dict(row) for row in rows]
+
+
 def obter_entrega(entrega_id: int) -> dict[str, Any] | None:
     with get_connection() as conn:
         row = conn.execute(
@@ -317,6 +334,7 @@ def historico_dataframe(
             e.numero_venda AS venda,
             r.entregador,
             e.status,
+            e.recebido_por,
             e.observacao
         FROM entregas e
         JOIN rotas r ON r.id = e.rota_id
