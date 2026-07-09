@@ -84,6 +84,12 @@ def init_db() -> None:
                 usuario TEXT,
                 FOREIGN KEY (entrega_id) REFERENCES entregas(id) ON DELETE CASCADE
             );
+
+            CREATE TABLE IF NOT EXISTS configuracoes (
+                chave TEXT PRIMARY KEY,
+                valor TEXT,
+                atualizado_em TEXT DEFAULT CURRENT_TIMESTAMP
+            );
             """
         )
 
@@ -106,3 +112,29 @@ def init_db() -> None:
             ],
         )
         conn.commit()
+
+
+def salvar_config(chave: str, valor: str) -> None:
+    with get_connection() as conn:
+        conn.execute(
+            """
+            INSERT INTO configuracoes (chave, valor, atualizado_em)
+            VALUES (?, ?, CURRENT_TIMESTAMP)
+            ON CONFLICT(chave) DO UPDATE SET
+                valor = excluded.valor,
+                atualizado_em = CURRENT_TIMESTAMP
+            """,
+            (chave, valor),
+        )
+        conn.commit()
+
+
+def obter_config(chave: str, default: str = "") -> str:
+    with get_connection() as conn:
+        row = conn.execute(
+            "SELECT valor FROM configuracoes WHERE chave = ?",
+            (chave,),
+        ).fetchone()
+    if not row or row["valor"] in (None, ""):
+        return default
+    return str(row["valor"])

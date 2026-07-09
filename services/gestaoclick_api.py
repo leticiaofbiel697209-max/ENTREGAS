@@ -8,6 +8,8 @@ from typing import Any
 import requests
 from dotenv import load_dotenv
 
+from services.db import obter_config
+
 
 load_dotenv()
 
@@ -700,6 +702,8 @@ def _situacao_venda_atual(venda: dict[str, Any]) -> tuple[str, str]:
 def _buscar_situacao_id_venda(nome: str) -> str:
     """Retorna somente a situacao explicitamente configurada para evitar chute perigoso."""
     status_id_config = get_config(f"GESTAOCLICK_STATUS_{nome}_ID", "").strip()
+    if not status_id_config:
+        status_id_config = obter_config(f"GESTAOCLICK_STATUS_{nome}_ID", "").strip()
     if status_id_config:
         return status_id_config
 
