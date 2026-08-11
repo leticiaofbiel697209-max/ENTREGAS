@@ -1,0 +1,17 @@
+import { defineConfig } from "@lovable.dev/vite-tanstack-config";
+
+export default defineConfig({
+  tanstackStart: {
+    server: { entry: "server" },
+  },
+  vite: {
+    resolve: {
+      dedupe: [
+        "react",
+        "react-dom",
+        "@tanstack/react-router",
+        "@tanstack/react-query"
+      ],
+    },
+  },
+});
